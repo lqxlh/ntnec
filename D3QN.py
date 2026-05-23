@@ -117,7 +117,7 @@ class Agent:
         self.act_dim = act_dim
         self.alg = algorithm# 绑定DDQN算法
         self.global_step = 0
-        self.update_target_steps = 2
+        self.update_target_steps = 300
         self.e_greed = e_greed
         self.e_greed_decrement = e_greed_decrement
 
