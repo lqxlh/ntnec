@@ -47,9 +47,9 @@ REWARD_SMOOTH_WINDOW = para.REWARD_SMOOTH_WINDOW
 
 
 def get_augmented_obs(obs_row, action_idx, action_dim):
-    # SAC 看到的是“状态 + 当前离散动作编号”。
     action_feature = np.array([action_idx / max(action_dim - 1, 1)], dtype=np.float32)
-    return np.concatenate([obs_row.astype(np.float32), action_feature], axis=0)
+    gamma_feature = np.array([float(obs_row[2])], dtype=np.float32)  # obs_row[2] 是归一化后的 Gamma
+    return np.concatenate([obs_row.astype(np.float32), action_feature, gamma_feature], axis=0)
 
 
 def summarize_debug(debug_info):
@@ -322,10 +322,10 @@ def run_training_experiment(result_prefix=experiment_config.MAIN_SIM_PREFIX):
             e_greed_decrement=0.89 / max(max_episode * steps * M, 1),
         )
 
-        model2 = SAC.Model(obs_dim=obs_shape + 1, act_dim=action_dim2)
-        actor_model = SAC.ActorModel(obs_dim=obs_shape + 1, act_dim=action_dim2)
-        algorithm2 = SAC.SAC(model2, actor_model, gamma=SAC_GAMMA, tau=TAU, actor_lr=ACTOR_LR, critic_lr=CRITIC_LR)
-        agent2 = SAC.Agent(algorithm2, obs_dim=obs_shape + 1, act_dim=action_dim2)
+        model2 = SAC.Model(obs_dim=obs_shape + 2, act_dim=action_dim2)
+        actor_model = SAC.ActorModel(obs_dim=obs_shape + 2, act_dim=action_dim2)
+        algorithm2 = SAC.SAC(model2, actor_model, ...)
+        agent2 = SAC.Agent(algorithm2, obs_dim=obs_shape + 2, act_dim=action_dim2)
 
         bs_list, md_list, sat_list = build_entities(env)
         rpm = ReplayMemory.ReplayMemory(MEMORY_SIZE)

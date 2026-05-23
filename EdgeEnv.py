@@ -407,7 +407,7 @@ class EdgeEnv:
         t_isl = sat_link_sample["T_isl_s"]
         # 这里用“当前卫星此刻最多能拿出的可分配频率”来判断是否存在可行连续动作，
         # 对应论文里“离散目标可选后，连续资源分配仍有解”的存在性判定。
-        candidate_freq = min(sat.res_F, para.SAT_F_MAX)
+        candidate_freq = min(sat.res_F, para.SAT_F_MIN)
         t_comp_candidate, _ = sat.computing(md.B, md.C, candidate_freq)
         _, power_result = self._calc_sat_power(md, sat, t_comp_candidate, t_isl)
         if power_result["remaining_budget_sat"] <= 0:
