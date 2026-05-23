@@ -185,14 +185,19 @@ def run_episode(env, rpm, rpm2, agent, agent2, md_list, bs_list, sat_list):
                 md_idx, discrete_action, cont_action, tcn, bs_list, md_list, sat_list
             )
 
-            next_md_idx = 0 if md_idx == M - 1 else md_idx + 1
-            next_mask = env.get_action_mask(md_list[next_md_idx], sat_list)
-            next_discrete_action = agent.predict(obs[next_md_idx], action_mask=next_mask)
-            next_sac_obs = get_augmented_obs(obs[next_md_idx], next_discrete_action, env.action_space.n)
-
-            # DQN 的 target 计算需要知道“下一状态哪些动作合法”，否则会高估下一状态里本不该选的卫星动作。
-            rpm.append((pre_obs, discrete_action, reward, obs[next_md_idx], done, next_mask))
-            rpm2.append((sac_obs, cont_action, reward, next_sac_obs, done))
+            if md_idx == M - 1:
+                # 最后一个设备：下一状态未知，done=True，next_obs 复用自身
+                next_mask = env.get_action_mask(md_list[md_idx], sat_list)
+                next_sac_obs = sac_obs
+                rpm.append((pre_obs, discrete_action, reward, obs[md_idx], True, next_mask))
+                rpm2.append((sac_obs, cont_action, reward, next_sac_obs, True))
+            else:
+                next_md_idx = md_idx + 1
+                next_mask = env.get_action_mask(md_list[next_md_idx], sat_list)
+                next_discrete_action = agent.predict(obs[next_md_idx], action_mask=next_mask)
+                next_sac_obs = get_augmented_obs(obs[next_md_idx], next_discrete_action, env.action_space.n)
+                rpm.append((pre_obs, discrete_action, reward, obs[next_md_idx], done, next_mask))
+                rpm2.append((sac_obs, cont_action, reward, next_sac_obs, done))
             slot_reward += reward
 
             if len(rpm) > MEMORY_WARMUP_SIZE and (md_idx % LEARN_FREQ == 0):
