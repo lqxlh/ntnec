@@ -191,7 +191,6 @@ class SAC(nn.Module):
             target_q1, target_q2 = self.target_model.value(next_obs, next_action)
             # 目标Q值 = 奖励 + 折扣*(最小Q值 + α*熵)
             target_q = torch.min(target_q1, target_q2) + self.log_alpha.exp() * next_entropy
-            terminal = torch.tensor(terminal, dtype=torch.float32)
             # 终止状态无未来奖励
             target_q = reward + (1.0 - terminal) * self.gamma * target_q
             target_q = target_q.detach()
