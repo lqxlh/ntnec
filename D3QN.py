@@ -164,4 +164,6 @@ class Agent:
             next_action_mask = torch.tensor(next_action_mask, dtype=torch.bool).to(device)
 
         loss = self.alg.learn(obs, act, reward, next_obs, terminal, next_action_mask=next_action_mask)
+        if self.global_step % self.update_target_steps == 0:
+            self.alg.sync_target()
         return loss.item()
