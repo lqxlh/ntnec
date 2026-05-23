@@ -182,7 +182,7 @@ class SAC(nn.Module):
         with torch.no_grad():# 目标网络无梯度
             # 维度扩展，适配网络输入
             reward = reward.unsqueeze(1)
-            terminal = terminal.unsqueeze(1)
+            terminal = terminal.unsqueeze(1).float()
             # 下一状态的动作 + 对数概率
             next_action, next_log_pro, _ = self.actor_model.policy(next_obs)
             next_entropy = -next_log_pro
