@@ -138,7 +138,7 @@ class SAC(nn.Module):
         self.policy_freq = policy_freq
         self.total_it = 0
         # 温度系数α：自动调整（控制熵的权重，SAC核心）
-        self.log_alpha = torch.tensor(math.log(0.01))
+        self.log_alpha = torch.tensor(math.log(0.01),device=device)
         self.log_alpha.requires_grad = True
         self.target_entropy = -1
         self.actor_model = actor_model.to(device)
