@@ -174,11 +174,6 @@ def run_episode(env, rpm, rpm2, agent, agent2, md_list, bs_list, sat_list):
         obs = env.get_state()
         tcn = [0] * 6
 
-        for bs_idx, bs in enumerate(bs_list):
-            bs.res_F = F_BS[bs_idx]
-        for sat_idx, sat in enumerate(sat_list):
-            sat.res_F = SAT_F[sat_idx]
-
         for md_idx in range(M):
             action_mask = env.get_action_mask(md_list[md_idx], sat_list)
             discrete_action = agent.sample(obs[md_idx], action_mask=action_mask)
