@@ -314,4 +314,6 @@ class Agent(nn.Module):
         # 调用SAC核心学习逻辑
         actor_cost, critic_cost = self.alg.learn(obs, act, reward, next_obs,
                                                  terminal, self.global_step)
+        if self.global_step % self.update_target_steps == 0:
+            self.alg.sync_target()
         return critic_cost, self.alg.log_alpha.exp()
