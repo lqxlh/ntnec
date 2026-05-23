@@ -94,15 +94,15 @@ w_v = 1.0
 # 3. 星载节点这里先上调到 6 GHz，目标是先让 NTN 卫星分支具备“存在可行解”的条件；
 # 4. 连续动作映射范围分别对应论文中的地面/卫星频率范围。
 # 这一版进一步加入“削弱本地优势”的设定，目标是避免评估策略稳定退化成“始终本地执行”。
-F_BS = [10e9, 10e9, 10e9]
+F_BS = [6e9, 6e9, 6e9]
 F_MD = 1e9
 F_MD_MIN = 0.1
 F_MD_MAX = 1.0
 SAT_F = [6e9, 6e9, 6e9]
 SAT_F_MIN = 0.8e9
-SAT_F_MAX = 3.0e9
+SAT_F_MAX = 2.5e9
 BS_F_MIN = 0.5e9
-BS_F_MAX = 3.0e9
+BS_F_MAX = 2.0e9
 
 # 当前模式对应的训练规模。
 steps = ACTIVE_PROFILE["steps"]
@@ -127,10 +127,10 @@ MAX_MD_SPEED = 10
 # 使部分任务在终端本地执行时更容易暴露出时延劣势。
 TASK_B_MIN = int(0.8e6)
 TASK_B_MAX = int(1.6e6)
-TASK_C_MIN = 100
+TASK_C_MIN = 200
 TASK_C_MAX = 850
-TASK_GAMMA_MIN = 1.2
-TASK_GAMMA_MAX = 1.5
+TASK_GAMMA_MIN = 1.0
+TASK_GAMMA_MAX = 2.0
 TASK_PRIORITY_MIN = 1
 TASK_PRIORITY_MAX = 3
 
