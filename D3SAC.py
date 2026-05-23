@@ -445,8 +445,6 @@ def run_training_experiment(result_prefix=experiment_config.MAIN_SIM_PREFIX):
                 f"sat_deadline={eval_sat_deadline_success_rate:.3f} "
                 f"sat_timeout={eval_sat_timeout_rate:.3f} "
                 f"over_gamma={eval_avg_sat_delay_over_gamma:.6f}s | "
-                # ????????????????????????
-                # ????????????????????????????
                 f"sat_load(avg_pen={eval_avg_sat_load_penalty:.4f},avg_use={eval_avg_sat_usage_ratio_on_feasible_sat:.3f},"
                 f"peak={eval_avg_sat_peak_usage_ratio_on_feasible_sat:.3f},peak_max={eval_max_sat_peak_usage_ratio:.3f})"
             )
