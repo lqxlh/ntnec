@@ -854,6 +854,7 @@ class EdgeEnv:
         md_list[m].move_real(step)
         md_list[m].connect_BS = md_list[m].connect_choice()
         self._refresh_full_state(md_list, bs_list, sat_list)
+        result = self.step(m, b, f, tcn, bs_list, md_list, sat_list)
         return result
 
     def get_state(self):
