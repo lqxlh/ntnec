@@ -151,8 +151,6 @@ class Agent:
 
     # 触发学习 + 定期同步目标网络
     def learn(self, obs, act, reward, next_obs, terminal, next_action_mask=None):
-        if self.global_step % self.update_target_steps == 0:
-            self.alg.sync_target()
         self.global_step += 1
         obs = torch.tensor(obs, dtype=torch.float32).to(device)
         act = torch.tensor(act, dtype=torch.long).to(device)
@@ -162,7 +160,6 @@ class Agent:
         if next_action_mask is not None:
             # next_action_mask 的形状是 [batch_size, action_dim]，True 表示下一状态下这个动作允许参与 target 计算。
             next_action_mask = torch.tensor(next_action_mask, dtype=torch.bool).to(device)
-
         loss = self.alg.learn(obs, act, reward, next_obs, terminal, next_action_mask=next_action_mask)
         if self.global_step % self.update_target_steps == 0:
             self.alg.sync_target()

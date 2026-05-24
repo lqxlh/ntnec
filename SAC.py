@@ -28,7 +28,7 @@ class ActorModel(nn.Module):
     # 核心方法：根据状态生成带探索的随机动作（训练用）
     def policy(self, obs):
         # 前向传播：两层ReLU激活的隐藏层
-        hid1 = F.relu(self.fc1(obs)).squeeze(0)
+        hid1 = F.relu(self.fc1(obs))
         hid2 = F.relu(self.fc2(hid1))
         # 计算高斯分布的均值
         act_mean = self.fc_mean(hid2)
@@ -52,7 +52,7 @@ class ActorModel(nn.Module):
     # 预测方法：根据状态生成确定性动作（测试/部署用，无探索）
     def predict(self, obs):
         # 前向传播
-        hid1 = F.relu(self.fc1(obs)).squeeze(0)
+        hid1 = F.relu(self.fc1(obs))
         hid2 = F.relu(self.fc2(hid1))
         # 直接用均值作为动作（去掉随机采样）
         act_mean = self.fc_mean(hid2)
@@ -301,8 +301,6 @@ class Agent(nn.Module):
 
     # 智能体学习：数据格式转换 + 目标网络同步 + 调用SAC学习
     def learn(self, obs, act, reward, next_obs, terminal):
-        if self.global_step % self.update_target_steps == 0:
-            self.alg.sync_target()
         self.global_step += 1
         # 数据转换：numpy数组 → PyTorch张量
         obs = torch.tensor(obs, dtype=torch.float32).to(device)

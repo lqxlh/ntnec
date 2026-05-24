@@ -76,8 +76,8 @@ REWARD_SMOOTH_WINDOW = 5
 
 # 场景基础参数：
 # 这里对应论文中的 N 个地面 ES、S 颗卫星、M 个移动设备。
-N = 3
-S = 3
+N = 1
+S = 2
 M = 10
 
 # 奖励函数中的权重：
@@ -86,23 +86,18 @@ w_t = 0.9
 w_e = 0.1
 # 这里参考目标论文的优化框架，在总时延和总能耗之外，
 # 再加入一个较小的资源占用代价权重，用于度量 BS/卫星算力资源使用强度。
-w_v = 1.0
+w_v = 0.4
 
 # 资源配置：
-# 1. 地面 ES 总算力取 10 GHz；
-# 2. 本地设备1 GHz
-# 3. 星载节点这里先上调到 6 GHz，目标是先让 NTN 卫星分支具备“存在可行解”的条件；
-# 4. 连续动作映射范围分别对应论文中的地面/卫星频率范围。
-# 这一版进一步加入“削弱本地优势”的设定，目标是避免评估策略稳定退化成“始终本地执行”。
-F_BS = [6e9, 6e9, 6e9]
-F_MD = 1e9
-F_MD_MIN = 0.1
+F_BS = [10e9]
+F_MD = 0.6e9
+F_MD_MIN = 0.4
 F_MD_MAX = 1.0
-SAT_F = [6e9, 6e9, 6e9]
-SAT_F_MIN = 0.8e9
-SAT_F_MAX = 2.5e9
-BS_F_MIN = 0.5e9
-BS_F_MAX = 2.0e9
+SAT_F = [6e9, 6e9]
+SAT_F_MIN = 1.2e9
+SAT_F_MAX = 2.0e9
+BS_F_MIN = 1.0e9
+BS_F_MAX = 2.5e9
 
 # 当前模式对应的训练规模。
 steps = ACTIVE_PROFILE["steps"]
@@ -125,10 +120,10 @@ MAX_MD_SPEED = 10
 # 2. 放宽任务最大容忍时延 Gamma，给“传播 + ISL + 传输 + 计算”留下实际可行窗口。
 # 在此基础上，为了削弱“本地永远最优”的趋势，这里再略微抬高任务计算强度，
 # 使部分任务在终端本地执行时更容易暴露出时延劣势。
-TASK_B_MIN = int(0.8e6)
-TASK_B_MAX = int(1.6e6)
-TASK_C_MIN = 300
-TASK_C_MAX = 1200
+TASK_B_MIN = int(0.4e6)
+TASK_B_MAX = int(1.8e6)
+TASK_C_MIN = 200
+TASK_C_MAX = 700
 TASK_GAMMA_MIN = 1.0
 TASK_GAMMA_MAX = 2.0
 TASK_PRIORITY_MIN = 1
@@ -257,11 +252,11 @@ MAX_PROP_DELAY = MAX_SAT_DISTANCE / LIGHT_SPEED
 
 # 约束惩罚：
 # 这里对应论文奖励函数中的 r_time、r_fre、r_vis、r_prop。
-PENALTY_TIME = -1.0
+PENALTY_TIME = -1.5
 PENALTY_RESOURCE = -1.0
-PENALTY_VISIBILITY = -1.0
-PENALTY_PROPAGATION = -1.0
-PENALTY_ZERO_ALLOCATION = -1.0
+PENALTY_VISIBILITY = -0.5
+PENALTY_PROPAGATION = -0.5
+PENALTY_ZERO_ALLOCATION = -0.5
 
 # 卫星软约束参数：
 # 这里不是替换论文中的可见性、资源、时延预算、功率可行性等硬约束，
@@ -272,9 +267,9 @@ ENABLE_SAT_LOAD_SOFT_PENALTY = 1
 
 # SAT_TARGET_USAGE 表示单颗卫星在一个时隙内更稳妥的目标负载比例。
 # 当某颗卫星的累计占用比例超过这个阈值后，奖励里会开始增加软惩罚。
-SAT_TARGET_USAGE = 0.55
+SAT_TARGET_USAGE = 0.65
 
 # SAT_LOAD_PENALTY_WEIGHT 控制这项“卫星过载软惩罚”的强度。
 # 这里先取较小值，保证论文主目标仍然是时延-能耗-任务价值权衡，
 # 软惩罚只作为稳定两阶段联合训练的辅助项。
-SAT_LOAD_PENALTY_WEIGHT = 0.5
+SAT_LOAD_PENALTY_WEIGHT = 0.3

@@ -10,7 +10,7 @@ import BS
 import D3QN
 import EdgeEnv
 import MD
-import ReplayMemory
+import ReplayMemory_SAC
 import SAC
 import SAT
 import experiment_config
@@ -235,6 +235,7 @@ def evaluate(env, agent, agent2, md_list, bs_list, sat_list, eval_rounds=2):
 
     for _ in range(eval_rounds):
         obs = env.reset(md_list, bs_list, sat_list)
+        env.reset_debug_stats()  # ← 加这一行
         episode_reward = 0.0
         tcn = [0] * 6
         step_idx = 0
@@ -324,12 +325,12 @@ def run_training_experiment(result_prefix=experiment_config.MAIN_SIM_PREFIX):
 
         model2 = SAC.Model(obs_dim=obs_shape + 2, act_dim=action_dim2)
         actor_model = SAC.ActorModel(obs_dim=obs_shape + 2, act_dim=action_dim2)
-        algorithm2 = SAC.SAC(model2, actor_model, ...)
+        algorithm2 = SAC.SAC(model2, actor_model, gamma=SAC_GAMMA, tau=TAU, actor_lr=ACTOR_LR, critic_lr=CRITIC_LR)
         agent2 = SAC.Agent(algorithm2, obs_dim=obs_shape + 2, act_dim=action_dim2)
 
         bs_list, md_list, sat_list = build_entities(env)
-        rpm = ReplayMemory.ReplayMemory(MEMORY_SIZE)
-        rpm2 = ReplayMemory.ReplayMemory(SAC_MEMORY_SIZE)
+        rpm = ReplayMemory_SAC.ReplayMemory(MEMORY_SIZE)
+        rpm2 = ReplayMemory_SAC.ReplayMemory(SAC_MEMORY_SIZE)
 
         while len(rpm) < MEMORY_WARMUP_SIZE or len(rpm2) < SAC_MEMORY_WARMUP_SIZE:
             run_episode(env, rpm, rpm2, agent, agent2, md_list, bs_list, sat_list)
