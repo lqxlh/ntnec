@@ -145,6 +145,14 @@ def summarize_debug(debug_info):
         "sat_mask_power_infeasible_rate":  float(debug_info.get("mask_sat_power_infeasible", 0.0)) / sat_mask_checks,
         "sat_mask_remaining_budget_fail_avg": float(debug_info.get("mask_sat_remaining_budget_fail_sum", 0.0)) / sat_budget_fail_count,
         "sat_mask_power_excess_ratio_avg":    float(debug_info.get("mask_sat_power_excess_ratio_sum", 0.0)) / sat_power_fail_count,
+        # ===== 新增字段：让 pickle 保留 loss 和动作计数，方便画图脚本读取 =====
+        "mean_dqn_loss":  float(debug_info.get("mean_dqn_loss", 0.0)),
+        "mean_q_loss":    float(debug_info.get("mean_q_loss", 0.0)),
+        "mean_cont_loss": float(debug_info.get("mean_cont_loss", 0.0)),
+        "local_actions":  float(debug_info.get("local_actions", 0.0)),
+        "bs_actions":     float(debug_info.get("bs_actions", 0.0)),
+        "sat_actions_count": float(debug_info.get("sat_actions", 0.0)),
+        # ===== 新增结束 =====
     }
 
 
@@ -286,18 +294,30 @@ def run_episode(env, rpm, agent, md_list, bs_list, sat_list):
 # ---------------------------------------------------------------------------
 
 def evaluate(env, agent, agent2, md_list, bs_list, sat_list, eval_rounds=2):
-    """
-    保持与原版 evaluate(env, agent, agent2, ...) 相同的函数签名，
-    agent2 参数被忽略（HD3QN 不需要）。
-    """
-    eval_rewards    = []
+    eval_rewards = []
     eval_debug_list = []
+
+    # === 新增：Q 值诊断统计 ===
+    q_diag = {
+        "q_local_sum": 0.0, "q_bs_sum": 0.0, "q_sat_sum": 0.0,
+        "q_local_count": 0, "q_bs_count": 0, "q_sat_count": 0,
+        "q_max_minus_min_sum": 0.0,
+        "q_local_minus_max_sum": 0.0,  # local 比最大动作低多少
+        "decision_count": 0,
+        # 按"local 是否合法"分桶统计
+        "q_local_when_legal_sum": 0.0, "q_local_when_legal_count": 0,
+        "q_max_when_local_legal_sum": 0.0,
+        # 记录"local 合法但没被选"的次数
+        "local_legal_not_chosen": 0,
+        "local_legal_total": 0,
+    }
+    # === 新增结束 ===
 
     for _ in range(eval_rounds):
         env.reset(md_list, bs_list, sat_list)
         env.reset_debug_stats()
         episode_reward = 0.0
-        tcn      = [0] * 6
+        tcn = [0] * 6
         step_idx = 0
 
         while step_idx < steps:
@@ -308,10 +328,41 @@ def evaluate(env, agent, agent2, md_list, bs_list, sat_list, eval_rounds=2):
                 sat.res_F = SAT_F[sat_idx]
 
             for md_idx in range(M):
-                action_mask     = env.get_action_mask(md_list[md_idx], sat_list)
-                # 评估时纯贪心（无探索）
+                action_mask = env.get_action_mask(md_list[md_idx], sat_list)
+
+                # === 新增：评估前先看 Q 值 ===
+                q_vals = agent.predict_q_values(obs[md_idx], action_mask=action_mask)
+                # 收集所有合法动作的 Q 值
+                if action_mask[0]:  # local 合法
+                    q_diag["q_local_sum"] += float(q_vals[0])
+                    q_diag["q_local_count"] += 1
+                if action_mask[1]:  # bs 合法
+                    q_diag["q_bs_sum"] += float(q_vals[1])
+                    q_diag["q_bs_count"] += 1
+                if action_mask[2]:  # sat 合法
+                    q_diag["q_sat_sum"] += float(q_vals[2])
+                    q_diag["q_sat_count"] += 1
+                # 合法动作里的 Q 范围
+                legal_qs = [float(q_vals[i]) for i in range(len(action_mask)) if action_mask[i]]
+                if len(legal_qs) >= 2:
+                    q_diag["q_max_minus_min_sum"] += max(legal_qs) - min(legal_qs)
+                    q_diag["decision_count"] += 1
+                # local 合法时，与最大值的差距
+                if action_mask[0]:
+                    q_diag["local_legal_total"] += 1
+                    q_diag["q_local_when_legal_sum"] += float(q_vals[0])
+                    q_diag["q_local_when_legal_count"] += 1
+                    q_diag["q_max_when_local_legal_sum"] += max(legal_qs)
+                    q_diag["q_local_minus_max_sum"] += float(q_vals[0]) - max(legal_qs)
+                # === 新增结束 ===
+
                 discrete_action = agent.predict(obs[md_idx], action_mask=action_mask)
-                cont_action     = agent.get_continuous(obs[md_idx], discrete_action)
+                cont_action = agent.get_continuous(obs[md_idx], discrete_action)
+
+                # === 新增：local 合法但没选 local 的统计 ===
+                if action_mask[0] and discrete_action != 0:
+                    q_diag["local_legal_not_chosen"] += 1
+                # === 新增结束 ===
 
                 obs, reward, _, tcn, _, _, _, _, _, _, _ = env.step(
                     md_idx, discrete_action, cont_action, tcn, bs_list, md_list, sat_list
@@ -328,6 +379,26 @@ def evaluate(env, agent, agent2, md_list, bs_list, sat_list, eval_rounds=2):
     if eval_debug_list:
         for key in eval_debug_list[0].keys():
             merged_debug[key] = float(np.mean([item[key] for item in eval_debug_list]))
+
+    # === 新增：把诊断统计塞进 merged_debug，让外层 print 能用上 ===
+    def _safe_avg(s, c):
+        return s / c if c > 0 else 0.0
+
+    merged_debug["q_local_avg"] = _safe_avg(q_diag["q_local_sum"], q_diag["q_local_count"])
+    merged_debug["q_bs_avg"] = _safe_avg(q_diag["q_bs_sum"], q_diag["q_bs_count"])
+    merged_debug["q_sat_avg"] = _safe_avg(q_diag["q_sat_sum"], q_diag["q_sat_count"])
+    merged_debug["q_spread_avg"] = _safe_avg(q_diag["q_max_minus_min_sum"], q_diag["decision_count"])
+    merged_debug["q_local_gap_to_max_avg"] = _safe_avg(
+        q_diag["q_local_minus_max_sum"], q_diag["q_local_when_legal_count"]
+    )
+    merged_debug["local_legal_not_chosen_rate"] = _safe_avg(
+        q_diag["local_legal_not_chosen"], q_diag["local_legal_total"]
+    )
+    merged_debug["local_legal_rate"] = _safe_avg(
+        q_diag["local_legal_total"], q_diag["decision_count"]
+    )
+    # === 新增结束 ===
+
     return float(np.mean(eval_rewards)), merged_debug
 
 
@@ -473,6 +544,17 @@ def run_training_experiment(result_prefix=experiment_config.MAIN_SIM_PREFIX):
                 f"hd3qn_loss={train_debug.get('mean_dqn_loss', 0.0):.5f} "
                 f"q_loss={train_debug.get('mean_q_loss', 0.0):.5f} "
                 f"cont_loss={train_debug.get('mean_cont_loss', 0.0):.5f}"
+            )
+            # === 新增：Q 值诊断 ===
+            print(
+                f"  [Q-diag] "
+                f"Q_local={eval_debug.get('q_local_avg', 0.0):.3f} "
+                f"Q_bs={eval_debug.get('q_bs_avg', 0.0):.3f} "
+                f"Q_sat={eval_debug.get('q_sat_avg', 0.0):.3f} | "
+                f"spread={eval_debug.get('q_spread_avg', 0.0):.3f} | "
+                f"local_legal_rate={eval_debug.get('local_legal_rate', 0.0):.3f} "
+                f"local_gap_to_max={eval_debug.get('q_local_gap_to_max_avg', 0.0):.3f} "
+                f"local_skip_rate={eval_debug.get('local_legal_not_chosen_rate', 0.0):.3f}"
             )
 
         train_rewards_all.append(train_rewards)

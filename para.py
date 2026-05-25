@@ -86,7 +86,7 @@ w_t = 0.9
 w_e = 0.1
 # 这里参考目标论文的优化框架，在总时延和总能耗之外，
 # 再加入一个较小的资源占用代价权重，用于度量 BS/卫星算力资源使用强度。
-w_v = 0.4
+w_v = 0.2
 
 # 资源配置：
 F_BS = [10e9]
@@ -185,7 +185,7 @@ SAT_PROJECTION_Y_MAX = 3.5e6
 # 卫星时间推进参数：
 # 1. SAT_DECISION_DT 表示一次设备级决策对应的物理时间推进；
 # 2. SAT_TRAJECTORY_STEPS 表示一个 episode 里预计算的卫星传播步数。
-SAT_DECISION_DT = 1.0 / M
+SAT_DECISION_DT = 5.0 / M
 SAT_TRAJECTORY_STEPS = steps * M + 2
 
 # SGP4 默认轨道参数：
@@ -252,11 +252,11 @@ MAX_PROP_DELAY = MAX_SAT_DISTANCE / LIGHT_SPEED
 
 # 约束惩罚：
 # 这里对应论文奖励函数中的 r_time、r_fre、r_vis、r_prop。
-PENALTY_TIME = -1.5
-PENALTY_RESOURCE = -1.0
-PENALTY_VISIBILITY = -0.5
-PENALTY_PROPAGATION = -0.5
-PENALTY_ZERO_ALLOCATION = -0.5
+PENALTY_TIME = -1.0
+PENALTY_RESOURCE = -0.4
+PENALTY_VISIBILITY = -0.3
+PENALTY_PROPAGATION = -0.3
+PENALTY_ZERO_ALLOCATION = -0.2
 
 # 卫星软约束参数：
 # 这里不是替换论文中的可见性、资源、时延预算、功率可行性等硬约束，
