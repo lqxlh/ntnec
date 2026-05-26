@@ -91,6 +91,7 @@ def summarize_debug(debug_info):
         "avg_task_value":            float(debug_info.get("avg_value_sum", 0.0)) / steps_count,
         "avg_delay_cost":            float(debug_info.get("avg_delay_cost_sum", 0.0)) / steps_count,
         "avg_energy_cost":           float(debug_info.get("avg_energy_cost_sum", 0.0)) / steps_count,
+        "avg_total_energy":          float(debug_info.get("avg_total_energy_sum", 0.0)) / steps_count,
         "avg_selected_power":        float(debug_info.get("avg_selected_power_sum", 0.0)) / steps_count,
         "avg_min_power":             float(debug_info.get("avg_min_power_sum", 0.0)) / steps_count,
         "avg_unconstrained_power":   float(debug_info.get("avg_unconstrained_power_sum", 0.0)) / steps_count,
@@ -228,8 +229,8 @@ def run_episode(env, rpm, agent, md_list, bs_list, sat_list):
             action_mask  = env.get_action_mask(md_list[md_idx], sat_list)
             # ① 离散动作：ε-greedy
             discrete_action = agent.sample(obs[md_idx], action_mask=action_mask)
-            # ② 连续动作：HD3QN 连续参数分支
-            cont_action = agent.get_continuous(obs[md_idx], discrete_action)
+            # ② 连续动作：HD3QN 连续参数分支（修改：传入 explore=True，激活高斯探索噪声）
+            cont_action = agent.get_continuous(obs[md_idx], discrete_action, explore=True)
 
             pre_obs = obs[md_idx].copy()
 
@@ -357,7 +358,8 @@ def evaluate(env, agent, agent2, md_list, bs_list, sat_list, eval_rounds=2):
                 # === 新增结束 ===
 
                 discrete_action = agent.predict(obs[md_idx], action_mask=action_mask)
-                cont_action = agent.get_continuous(obs[md_idx], discrete_action)
+                # 获取连续动作（修改：显式传入 explore=False，关闭高斯噪声，保持确定性最佳算力输出）
+                cont_action = agent.get_continuous(obs[md_idx], discrete_action, explore=False)
 
                 # === 新增：local 合法但没选 local 的统计 ===
                 if action_mask[0] and discrete_action != 0:
@@ -530,6 +532,7 @@ def run_training_experiment(result_prefix=experiment_config.MAIN_SIM_PREFIX):
                 f"bs={eval_debug['bs_actions']:.1f},"
                 f"sat={eval_debug['sat_actions']:.1f}) | "
                 f"avg_prop={avg_prop_delay:.6f}s avg_total={avg_total_delay:.6f}s "
+                f"avg_energy={eval_metrics['avg_total_energy']:.6f}J "
                 f"avg_reward={avg_reward:.3f} | "
                 f"smooth_eval={eval_smoothed_reward:.3f} | "
                 f"sat_usage={eval_metrics['sat_usage_rate']:.3f} "

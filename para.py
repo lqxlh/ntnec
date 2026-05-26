@@ -65,13 +65,14 @@ TAU = 0.005
 EVAL_INTERVAL = ACTIVE_PROFILE["eval_interval"]
 EVAL_ROUNDS = ACTIVE_PROFILE["eval_rounds"]
 
+lr_step_size = 20000   # 每？次更新衰减一次
+lr_gamma = 0.7        # 学习率乘的系数
+
 # 训练稳定性分析参数：
 # 下面这组参数不改变论文里的 MDP 定义，也不改变状态/动作/奖励本身，
 # 只是用于“如何判断当前联合策略是否已经进入稳定有效区间”以及“如何避免过了最佳轮次后继续学坏”。
 # 其中：
 # 1. REWARD_SMOOTH_WINDOW 用于对评估回报做滑动平均，减小单次随机轨道/任务采样造成的抖动；
-# 2. STABILITY_* 指标把“高回报、低超时、适度卫星参与”综合成一个稳定性分数；
-# 3. EARLY_STOP_* 用于当评估长期不再改善时停止训练，并保留最佳 checkpoint。
 REWARD_SMOOTH_WINDOW = 5
 
 # 场景基础参数：
@@ -90,7 +91,7 @@ w_v = 0.2
 
 # 资源配置：
 F_BS = [10e9]
-F_MD = 0.6e9
+F_MD = 1e9
 F_MD_MIN = 0.4
 F_MD_MAX = 1.0
 SAT_F = [6e9, 6e9]
@@ -123,7 +124,7 @@ MAX_MD_SPEED = 10
 TASK_B_MIN = int(0.4e6)
 TASK_B_MAX = int(1.8e6)
 TASK_C_MIN = 200
-TASK_C_MAX = 700
+TASK_C_MAX = 1200
 TASK_GAMMA_MIN = 1.0
 TASK_GAMMA_MAX = 2.0
 TASK_PRIORITY_MIN = 1
@@ -252,7 +253,7 @@ MAX_PROP_DELAY = MAX_SAT_DISTANCE / LIGHT_SPEED
 
 # 约束惩罚：
 # 这里对应论文奖励函数中的 r_time、r_fre、r_vis、r_prop。
-PENALTY_TIME = -1.0
+PENALTY_TIME = -0.8
 PENALTY_RESOURCE = -0.4
 PENALTY_VISIBILITY = -0.3
 PENALTY_PROPAGATION = -0.3
@@ -267,9 +268,9 @@ ENABLE_SAT_LOAD_SOFT_PENALTY = 1
 
 # SAT_TARGET_USAGE 表示单颗卫星在一个时隙内更稳妥的目标负载比例。
 # 当某颗卫星的累计占用比例超过这个阈值后，奖励里会开始增加软惩罚。
-SAT_TARGET_USAGE = 0.65
+SAT_TARGET_USAGE = 0.45
 
 # SAT_LOAD_PENALTY_WEIGHT 控制这项“卫星过载软惩罚”的强度。
 # 这里先取较小值，保证论文主目标仍然是时延-能耗-任务价值权衡，
 # 软惩罚只作为稳定两阶段联合训练的辅助项。
-SAT_LOAD_PENALTY_WEIGHT = 0.3
+SAT_LOAD_PENALTY_WEIGHT = 0.6

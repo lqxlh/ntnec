@@ -127,6 +127,7 @@ class EdgeEnv:
             "penalty_zero_alloc_sum": 0.0,
             "reward_sum": 0.0,
             "steps": 0,
+            "avg_total_energy_sum": 0.0,
         }
 
     def reset_debug_stats(self):
@@ -709,6 +710,20 @@ class EdgeEnv:
                 self.last_debug["propagation_penalty"] += 1
 
         total_delay, total_energy = self._aggregate_total_delay_energy(b, metrics)
+        # ================== [新增] 物理指标安全截断与丢弃保护 ==================
+        # 实际通信系统中，任务超时后会被直接丢弃（Aborted），不会无休止占用计算/传输资源。
+        # 这里设定一个合理的物理安全上限（最大截止时间 Gamma_MAX 的 1.5 倍，即 2.0s * 1.5 = 3.0s）
+        DELAY_CEILING = para.TASK_GAMMA_MAX * 1.5
+
+        # 设定单步能耗的安全上限
+        ENERGY_CEILING = 10
+
+        if total_delay > DELAY_CEILING or total_delay <= 0:
+            total_delay = DELAY_CEILING
+            total_energy = min(total_energy, ENERGY_CEILING)
+        else:
+            total_energy = min(total_energy, ENERGY_CEILING)
+        # ===================================================================
         sat_load_penalty = 0.0
         sat_usage_ratio_after = 0.0
         sat_peak_usage_ratio = 0.0
@@ -827,11 +842,14 @@ class EdgeEnv:
         self.last_debug["avg_value_sum"] += task_value
         self.last_debug["avg_delay_cost_sum"] += delay_cost
         self.last_debug["avg_energy_cost_sum"] += energy_cost
+        self.last_debug["avg_total_energy_sum"] +=total_energy
         self.last_debug["penalty_time_sum"] += penalty_time
         self.last_debug["penalty_resource_sum"] += penalty_resource
         self.last_debug["penalty_visibility_sum"] += penalty_visibility
         self.last_debug["penalty_propagation_sum"] += penalty_propagation
         self.last_debug["penalty_zero_alloc_sum"] += penalty_zero_alloc
+        # 在 reward 计算完成的最后
+        reward = max(reward, -5.0)  # 单步 reward 下限截断到 -5
         self.last_debug["reward_sum"] += reward
         self.last_debug["steps"] += 1
 

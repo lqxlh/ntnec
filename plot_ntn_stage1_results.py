@@ -76,29 +76,35 @@ def build_task_success_curve(metric_histories):
     return np.clip(1.0 + penalty_time_curve, 0.0, 1.0)
 
 
-def build_energy_curve(metric_histories):
-    # 环境里保存的是 w_e * energy，这里除以 w_e 还原平均总能耗。
-    weighted_energy_curve = build_curve(metric_histories, "avg_energy_cost", 0.0)
-    weight_energy = max(float(para.w_e), 1e-12)
-    return weighted_energy_curve / weight_energy
+def build_action_usage_curves(metric_histories):
+    # 三种动作的使用次数被 summarize_debug 保存为 local_actions / bs_actions / sat_actions_count。
+    # 按总动作数归一化得到使用率，更符合"协同分布"的可视化语义。
+    local_curve = build_curve(metric_histories, "local_actions", 0.0)
+    bs_curve    = build_curve(metric_histories, "bs_actions",    0.0)
+    sat_curve   = build_curve(metric_histories, "sat_actions_count", 0.0)
+    total       = local_curve + bs_curve + sat_curve
+    total_safe  = np.where(total > 0, total, 1.0)
+    return {
+        "local": local_curve / total_safe,
+        "bs":    bs_curve    / total_safe,
+        "sat":   sat_curve   / total_safe,
+    }
 
 
 def draw_metric_overview(plt, episodes, curves, output_path):
-    # 2 行 3 列分别展示用户要求的六个核心指标。
+    # 2 行 3 列：5 个核心指标 + 1 个动作使用率分布。
     fig, axes = plt.subplots(2, 3, figsize=(16, 8))
     fig.suptitle("NTN Evaluation Metrics", fontsize=15)
     axes = axes.reshape(-1)
 
+    # 前 4 个子图：常规单线指标
     plot_items = [
         ("Average Task Success Rate", curves["task_success"], "Success Rate", "#2ca02c"),
-        ("Average Total Delay", curves["total_delay"], "Delay (s)", "#d62728"),
-        ("Average Total Energy", curves["total_energy"], "Energy (J)", "#9467bd"),
-        ("Average Reward", curves["reward"], "Reward / Step", "#1f77b4"),
-        ("Satellite Usage Rate", curves["sat_usage"], "Usage Rate", "#ff7f0e"),
-        ("Satellite Success Rate", curves["sat_success"], "Success Rate", "#17becf"),
+        ("Average Total Delay",       curves["total_delay"],  "Delay (s)",    "#d62728"),
+        ("Average Total Energy",      curves["total_energy"], "Energy (J)",   "#9467bd"),
+        ("Average Reward",            curves["reward"],       "Reward / Step","#1f77b4"),
     ]
-
-    for axis, (title, values, ylabel, color) in zip(axes, plot_items):
+    for axis, (title, values, ylabel, color) in zip(axes[:4], plot_items):
         axis.plot(episodes, values, color=color, linewidth=1.5, alpha=0.5, label="Raw")
         axis.plot(episodes, smooth_curve(values), color=color, linewidth=2.4, label="Smoothed")
         axis.set_title(title)
@@ -106,6 +112,29 @@ def draw_metric_overview(plt, episodes, curves, output_path):
         axis.set_ylabel(ylabel)
         axis.grid(alpha=0.3)
         axis.legend()
+
+    # 第 5 个子图：动作使用率分布（三条曲线同图）
+    usage = curves["action_usage"]
+    axis_usage = axes[4]
+    axis_usage.plot(episodes, smooth_curve(usage["local"]), color="#2ca02c",
+                    linewidth=2.4, label="Local")
+    axis_usage.plot(episodes, smooth_curve(usage["bs"]),    color="#1f77b4",
+                    linewidth=2.4, label="BS")
+    axis_usage.plot(episodes, smooth_curve(usage["sat"]),   color="#ff7f0e",
+                    linewidth=2.4, label="SAT")
+    # 用半透明细线叠 raw 数据,体现训练抖动
+    axis_usage.plot(episodes, usage["local"], color="#2ca02c", linewidth=0.8, alpha=0.3)
+    axis_usage.plot(episodes, usage["bs"],    color="#1f77b4", linewidth=0.8, alpha=0.3)
+    axis_usage.plot(episodes, usage["sat"],   color="#ff7f0e", linewidth=0.8, alpha=0.3)
+    axis_usage.set_title("Action Usage Distribution")
+    axis_usage.set_xlabel("Episode")
+    axis_usage.set_ylabel("Usage Ratio")
+    axis_usage.set_ylim(0.0, 1.0)
+    axis_usage.grid(alpha=0.3)
+    axis_usage.legend()
+
+    # 第 6 格留空（隐藏边框，让画面干净）
+    axes[5].axis("off")
 
     plt.tight_layout()
     plt.savefig(output_path, dpi=220, bbox_inches="tight")
@@ -148,10 +177,9 @@ def main():
     curves = {
         "task_success": build_task_success_curve(eval_histories),
         "total_delay": build_curve(eval_histories, "avg_total_delay"),
-        "total_energy": build_energy_curve(eval_histories),
+        "total_energy": build_curve(eval_histories, "avg_total_energy", 0.0),  # 用真实能耗
         "reward": reward_curve,
-        "sat_usage": build_curve(eval_histories, "sat_usage_rate"),
-        "sat_success": build_curve(eval_histories, "sat_deadline_success_rate"),
+        "action_usage": build_action_usage_curves(eval_histories),
     }
     metric_episodes = np.arange(1, len(reward_curve) + 1)
     return_episodes = np.arange(1, len(eval_return_curve) + 1)

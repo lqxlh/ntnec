@@ -80,6 +80,12 @@ class HD3QN(nn.Module):
         self.act_dim = act_dim
         self.gamma = gamma
         self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
+        #加了stepLR衰减
+        self.scheduler = torch.optim.lr_scheduler.StepLR(
+            self.optimizer,
+            step_size=para.lr_step_size,  # 每多少 step 衰减一次
+            gamma=para.lr_gamma  # 衰减倍率，比如 0.5 / 0.7
+        )
         self.reward_clip = 5.0
         self.td_target_clip = 20.0
         # cont_loss 在总 loss 中的权重。0.1 是 P-DQN 论文里的常用值，
@@ -170,7 +176,8 @@ class HD3QN(nn.Module):
         total_loss.backward()
         nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10.0)
         self.optimizer.step()
-
+        #学习率更新
+        self.scheduler.step()
         return total_loss, q_loss, cont_loss
 
     def sync_target(self):
@@ -240,10 +247,27 @@ class Agent:
             q_values = q_values.masked_fill(~mask_t, -1e9)
         return int(q_values.argmax(dim=-1).item())
 
-    def get_continuous(self, obs, discrete_action: int) -> float:
+    def get_continuous(self, obs, discrete_action: int, explore: bool = False) -> float:
+        """获取连续参数。
+
+        参数：
+        - explore (bool):
+            - 在训练(train)采样时设为 True，添加随 e_greed 衰减的高斯探索噪声；
+            - 在评估(eval)测试时设为 False，保持网络纯确定性输出。
+        """
         obs_t = self._to_tensor(obs)
         _, cont_params = self.alg.predict_both(obs_t)
-        return float(cont_params[0, discrete_action].item())
+        val = float(cont_params[0, discrete_action].item())
+        # 仅在训练阶段开启高斯探索噪声
+        if explore:
+            # 1. 噪声标准差与 e_greed 绑定，随着训练不断进行而自发衰减
+            # 0.15 是初始标准差，能为算力分配提供适度且平滑的探索空间
+            noise_scale = 0.15 * self.e_greed
+            noise = np.random.normal(0, noise_scale)
+
+            # 2. 将连续算力比例进行随机扰动，并裁剪在 Sigmoid 的 [0.0, 1.0] 物理区间内
+            val = np.clip(val + noise, 0.0, 1.0)
+        return val
 
     def learn(
         self,
