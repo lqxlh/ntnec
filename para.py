@@ -32,12 +32,12 @@ RUN_PROFILES = {
         "memory_warmup_size": 2000,
         "sac_memory_warmup_size": 2000,
         "steps": 200,
-        "max_episode": 300,
+        "max_episode": 400,
         "seed": [1],
         "batch_size": 256,
         "sac_batch_size": 256,
         "eval_interval": 1,
-        "eval_rounds": 2,
+        "eval_rounds": 1,
     },
 }
 
@@ -65,7 +65,7 @@ TAU = 0.005
 EVAL_INTERVAL = ACTIVE_PROFILE["eval_interval"]
 EVAL_ROUNDS = ACTIVE_PROFILE["eval_rounds"]
 
-lr_step_size = 20000   # 每？次更新衰减一次
+lr_step_size = 20000   # 每20000步更新衰减一次
 lr_gamma = 0.7        # 学习率乘的系数
 
 # 训练稳定性分析参数：
@@ -83,16 +83,16 @@ M = 10
 
 # 奖励函数中的权重：
 # 这里直接对应论文代价函数 phi_{m,t} 里的 w_D、w_E、w_V。
-w_t = 0.9
-w_e = 0.1
+w_t = 0.85
+w_e = 0.15
 # 这里参考目标论文的优化框架，在总时延和总能耗之外，
-# 再加入一个较小的资源占用代价权重，用于度量 BS/卫星算力资源使用强度。
-w_v = 0.2
+# 成功完成高优先级任务的业务收益
+w_v = 0.4
 
 # 资源配置：
 F_BS = [10e9]
 F_MD = 1e9
-F_MD_MIN = 0.4
+F_MD_MIN = 0.55
 F_MD_MAX = 1.0
 SAT_F = [6e9, 6e9]
 SAT_F_MIN = 1.2e9
