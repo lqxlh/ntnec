@@ -115,22 +115,17 @@ class HD3QN(nn.Module):
         self,
         obs: torch.Tensor,
         disc_action: torch.Tensor,
-        cont_action: torch.Tensor,  # 保留入参以兼容主流程，但不再用于 cont_loss
+        cont_action: torch.Tensor,
         reward: torch.Tensor,
         next_obs: torch.Tensor,
         terminal: torch.Tensor,
         next_action_mask=None,
+        is_weights=None,  # ← 【新增参数】接收来自 PER 的重要度采样权重
     ):
-        """两阶段构造 loss：
-        - 阶段 1：q_loss，让 cont_fc 输出脱离梯度图。
-        - 阶段 2：cont_loss = -Q，冻结 Q 分支头，只让 cont_fc 学习。
-        然后把两个 loss 一起 backward。
-        """
         self.model.train()
         disc_action_long = disc_action.long()
 
         # ========== 阶段 1：Q-loss ==========
-        # 前向：cont_pred 被 detach 掉，避免 Q-loss 反传时影响 cont_fc。
         feat_q = self.model.shared(obs)
         cont_pred_q = self.model.cont_fc(feat_q).detach()
         q_input_q = torch.cat([feat_q, cont_pred_q], dim=1)
@@ -151,22 +146,26 @@ class HD3QN(nn.Module):
             td_target = clipped_reward + (1.0 - terminal.float()) * self.gamma * next_q_val
             td_target = td_target.clamp(-self.td_target_clip, self.td_target_clip)
 
-        q_loss = F.smooth_l1_loss(q_selected, td_target)
+        # 【核心修改】计算绝对 TD Error 用于反馈给 PER 树结构进行优先级更新
+        td_errors = torch.abs(q_selected - td_target).detach().cpu().numpy()
+
+        # 【核心修改】计算 Huber Loss 并不做平均(reduction='none')，手动乘上权重后再求均值
+        elementwise_loss = F.smooth_l1_loss(q_selected, td_target, reduction='none')
+        if is_weights is not None:
+            is_weights_t = torch.tensor(is_weights, dtype=torch.float32, device=q_selected.device)
+            q_loss = torch.mean(elementwise_loss * is_weights_t)
+        else:
+            q_loss = torch.mean(elementwise_loss)
 
         # ========== 阶段 2：Cont-loss = -Q ==========
-        # 冻结 Q 头，让梯度只能流过 cont_fc。
         self._set_q_head_requires_grad(False)
 
         feat_c = self.model.shared(obs)
         cont_pred_c = self.model.cont_fc(feat_c)
-        # feat 部分 detach，避免 cont_loss 通过 shared 层影响 Q 学习的特征表示。
-        # 这样 shared 层主要由 q_loss 驱动，cont_fc 由 -Q 驱动，分工明确。
         q_input_c = torch.cat([feat_c.detach(), cont_pred_c], dim=1)
         q_for_cont = self.model._compute_q(q_input_c)
-        # 让被选动作的 Q 值最大化 → 取负作为 loss
         cont_loss = -q_for_cont.gather(1, disc_action_long.unsqueeze(1)).squeeze(1).mean()
 
-        # 恢复 Q 头的梯度
         self._set_q_head_requires_grad(True)
 
         # ========== 联合 backward ==========
@@ -176,9 +175,9 @@ class HD3QN(nn.Module):
         total_loss.backward()
         nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10.0)
         self.optimizer.step()
-        #学习率更新
-        self.scheduler.step()
-        return total_loss, q_loss, cont_loss
+
+        # 【核心修改】多返回一个 td_errors
+        return total_loss, q_loss, cont_loss, td_errors
 
     def sync_target(self):
         self.target_model.load_state_dict(self.model.state_dict())
@@ -278,6 +277,7 @@ class Agent:
         next_obs,
         terminal,
         next_action_mask=None,
+        is_weights=None,  # ← 【新增参数】
     ):
         self.global_step += 1
 
@@ -293,7 +293,8 @@ class Agent:
         else:
             next_mask_t = None
 
-        total_loss, q_loss, cont_loss = self.alg.learn(
+        # 【修改】传入 is_weights，并多接收一个 td_errors
+        total_loss, q_loss, cont_loss, td_errors = self.alg.learn(
             obs_t,
             disc_act_t,
             cont_act_t,
@@ -301,12 +302,14 @@ class Agent:
             next_obs_t,
             terminal_t,
             next_action_mask=next_mask_t,
+            is_weights=is_weights,  # ← 传入
         )
 
         if self.global_step % self.update_target_steps == 0:
             self.alg.sync_target()
 
-        return total_loss.item(), q_loss.item(), cont_loss.item()
+        # 【修改】将项转为标量后，把 td_errors 也返回出去
+        return total_loss.item(), q_loss.item(), cont_loss.item(), td_errors
 
     def predict_q_values(self, obs, action_mask=None):
         """诊断用：返回三个离散动作的 Q 值数组，不做 argmax。"""

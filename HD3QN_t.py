@@ -199,7 +199,7 @@ def build_hd3qn_agent(env):
         obs_dim=obs_shape,
         act_dim=action_dim,
         e_greed=0.9,
-        e_greed_decrement=0.89 / max(max_episode * steps * M, 1),
+        e_greed_decrement=0.89 / max(200 * steps * M, 1),#调探索率衰减
     )
     return agent
 
@@ -264,14 +264,28 @@ def run_episode(env, rpm, agent, md_list, bs_list, sat_list):
 
             # ---- 学习 ----
             if len(rpm) > MEMORY_WARMUP_SIZE and (md_idx % LEARN_FREQ == 0):
+                # (b_obs, b_disc, b_cont, b_rew,
+                #  b_nobs, b_done, b_nmask) = rpm.sample(BATCH_SIZE)
+                #
+                # tl, ql, cl = agent.learn(
+                #     b_obs, b_disc, b_cont, b_rew,
+                #     b_nobs, b_done,
+                #     next_action_mask=b_nmask,
+                # )
+                # 【修改后】PER 采样逻辑：同时解包出树节点索引 idxs 和采样权重 is_weights
                 (b_obs, b_disc, b_cont, b_rew,
-                 b_nobs, b_done, b_nmask) = rpm.sample(BATCH_SIZE)
+                 b_nobs, b_done, b_nmask), idxs, is_weights = rpm.sample(BATCH_SIZE)
 
-                tl, ql, cl = agent.learn(
+                # 将权重传入 agent，并接收当前 batch 真实的 td_errors
+                tl, ql, cl, td_errors = agent.learn(
                     b_obs, b_disc, b_cont, b_rew,
                     b_nobs, b_done,
                     next_action_mask=b_nmask,
+                    is_weights=is_weights  # 传入权重
                 )
+
+                # 【新增】将计算得到的最新误差反馈给回放池，在线更新二叉树的优先级分布
+                rpm.update_priorities(idxs, td_errors)
                 total_losses.append(tl)
                 q_losses.append(ql)
                 cont_losses.append(cl)
@@ -427,7 +441,7 @@ def run_training_experiment(result_prefix=experiment_config.MAIN_SIM_PREFIX):
         agent = build_hd3qn_agent(env)
 
         bs_list, md_list, sat_list = build_entities(env)
-        rpm = ReplayMemory.ReplayMemory(MEMORY_SIZE)
+        rpm = ReplayMemory.PrioritizedReplayMemory(MEMORY_SIZE) # ← 修改为此处
 
         # ---- Warmup：先填满回放池 ----
         while len(rpm) < MEMORY_WARMUP_SIZE:
@@ -560,6 +574,8 @@ def run_training_experiment(result_prefix=experiment_config.MAIN_SIM_PREFIX):
                 f"local_skip_rate={eval_debug.get('local_legal_not_chosen_rate', 0.0):.3f}"
             )
 
+            # 👇 【在这里添加下面这一行，保持 12 个空格缩进】
+            agent.alg.scheduler.step()
         train_rewards_all.append(train_rewards)
         eval_rewards_all.append(eval_rewards)
         debug_history_all.append(debug_history)

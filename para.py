@@ -34,8 +34,8 @@ RUN_PROFILES = {
         "steps": 200,
         "max_episode": 400,
         "seed": [1],
-        "batch_size": 256,
-        "sac_batch_size": 256,
+        "batch_size": 512,
+        "sac_batch_size": 512,
         "eval_interval": 1,
         "eval_rounds": 1,
     },
@@ -65,7 +65,7 @@ TAU = 0.005
 EVAL_INTERVAL = ACTIVE_PROFILE["eval_interval"]
 EVAL_ROUNDS = ACTIVE_PROFILE["eval_rounds"]
 
-lr_step_size = 20000   # 每20000步更新衰减一次
+lr_step_size = 200000   # 每100集衰减一次（100×200步×10设备）
 lr_gamma = 0.7        # 学习率乘的系数
 
 # 训练稳定性分析参数：
@@ -83,16 +83,16 @@ M = 10
 
 # 奖励函数中的权重：
 # 这里直接对应论文代价函数 phi_{m,t} 里的 w_D、w_E、w_V。
-w_t = 0.85
-w_e = 0.15
+w_t = 0.9
+w_e = 0.1
 # 这里参考目标论文的优化框架，在总时延和总能耗之外，
 # 成功完成高优先级任务的业务收益
 w_v = 0.4
 
 # 资源配置：
 F_BS = [10e9]
-F_MD = 1e9
-F_MD_MIN = 0.55
+F_MD = 0.8e9
+F_MD_MIN = 0.4
 F_MD_MAX = 1.0
 SAT_F = [6e9, 6e9]
 SAT_F_MIN = 1.2e9
@@ -121,7 +121,7 @@ MAX_MD_SPEED = 10
 # 2. 放宽任务最大容忍时延 Gamma，给“传播 + ISL + 传输 + 计算”留下实际可行窗口。
 # 在此基础上，为了削弱“本地永远最优”的趋势，这里再略微抬高任务计算强度，
 # 使部分任务在终端本地执行时更容易暴露出时延劣势。
-TASK_B_MIN = int(0.4e6)
+TASK_B_MIN = int(0.3e6)
 TASK_B_MAX = int(1.8e6)
 TASK_C_MIN = 200
 TASK_C_MAX = 1200
@@ -151,16 +151,11 @@ GROUND_HANDOVER_DELAY_SCALE = 1.25e9
 ENABLE_GROUND_CONGESTION = 1
 
 # NTN 参数：
-# 这里对应论文卫星链路、可见性和传播时延部分的核心参数。
-# 当前这组值优先服务于“先让卫星链路可行、让强化学习真正接触到卫星动作”：
-# 1. 增大卫星带宽，降低为满足时延约束所需的传输时长与发射功率；
-# 2. 增大卫星天线增益，提升卫星链路有效信道增益；
-# 3. 后续若卫星动作已经能稳定出现，再逐步把这些参数收紧回论文正式设定。
 SAT_HEIGHT = 550e3
 SAT_MIN_ELEVATION_DEG = 10.0
 SAT_BW = 6e7
-SAT_NOISE = 3.1622776601683796e-14
-SAT_GAIN = 1e5
+SAT_NOISE = 3.1622776601683796e-14#4.80e-13
+SAT_GAIN = 1e5#3162
 MD_GAIN = 3.162
 ATM_LOSS_LINEAR = 1.4125
 SAT_ETA_D = 0.95
@@ -268,9 +263,9 @@ ENABLE_SAT_LOAD_SOFT_PENALTY = 1
 
 # SAT_TARGET_USAGE 表示单颗卫星在一个时隙内更稳妥的目标负载比例。
 # 当某颗卫星的累计占用比例超过这个阈值后，奖励里会开始增加软惩罚。
-SAT_TARGET_USAGE = 0.45
+SAT_TARGET_USAGE = 0.6
 
 # SAT_LOAD_PENALTY_WEIGHT 控制这项“卫星过载软惩罚”的强度。
 # 这里先取较小值，保证论文主目标仍然是时延-能耗-任务价值权衡，
 # 软惩罚只作为稳定两阶段联合训练的辅助项。
-SAT_LOAD_PENALTY_WEIGHT = 0.6
+SAT_LOAD_PENALTY_WEIGHT = 0.2
