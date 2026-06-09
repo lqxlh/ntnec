@@ -42,31 +42,38 @@ class HD3QNModel(nn.Module):
             nn.Sigmoid(),
         )
 
-        q_input_dim = hid_size + act_dim
+        q_input_dim = hid_size + act_dim + 1
+        self.register_buffer("action_eye", torch.eye(act_dim))
         self.adv_fc = nn.Sequential(
-            nn.Linear(q_input_dim, hid_size),
-            nn.ReLU(),
-            nn.Linear(hid_size, act_dim),
-        )
-        self.val_fc = nn.Sequential(
             nn.Linear(q_input_dim, hid_size),
             nn.ReLU(),
             nn.Linear(hid_size, 1),
         )
+        self.val_fc = nn.Sequential(
+            nn.Linear(hid_size, hid_size),
+            nn.ReLU(),
+            nn.Linear(hid_size, 1),
+        )
 
-    def _compute_q(self, q_input: torch.Tensor) -> torch.Tensor:
+    def _compute_q(self, feat: torch.Tensor, cont_params: torch.Tensor) -> torch.Tensor:
         """共用的 Dueling Q 计算逻辑。"""
-        adv = self.adv_fc(q_input)
-        val = self.val_fc(q_input)
-        q_values = val + (adv - adv.mean(dim=1, keepdim=True))
+        batch_size = feat.shape[0]
+        action_eye = self.action_eye.to(device=feat.device, dtype=feat.dtype)
+        action_eye = action_eye.unsqueeze(0).expand(batch_size, -1, -1)
+        feat_rep = feat.unsqueeze(1).expand(-1, self.act_dim, -1)
+        cont_rep = cont_params.unsqueeze(-1)
+        q_input = torch.cat([feat_rep, action_eye, cont_rep], dim=-1)
+        q_input = q_input.reshape(batch_size * self.act_dim, -1)
+        adv = self.adv_fc(q_input).view(batch_size, self.act_dim)
+        val = self.val_fc(feat)
+        q_values = val + adv
         return q_values
 
     def forward(self, obs):
         """对外接口保持不变：返回 Q 值和连续参数。"""
         feat = self.shared(obs)
         cont_params = self.cont_fc(feat)
-        q_input = torch.cat([feat, cont_params], dim=1)
-        q_values = self._compute_q(q_input)
+        q_values = self._compute_q(feat, cont_params)
         return q_values, cont_params
 
 
@@ -86,11 +93,11 @@ class HD3QN(nn.Module):
             step_size=para.lr_step_size,  # 每多少 step 衰减一次
             gamma=para.lr_gamma  # 衰减倍率，比如 0.5 / 0.7
         )
-        self.reward_clip = 5.0
+        self.reward_clip = 8.0
         self.td_target_clip = 20.0
         # cont_loss 在总 loss 中的权重。0.1 是 P-DQN 论文里的常用值，
         # 既能让连续分支真正学习，也不会冲垮 Q 分支的 TD 训练。
-        self.cont_loss_weight = 0.1
+        self.cont_loss_weight = 0.08
 
     def predict_q(self, obs: torch.Tensor):
         self.model.eval()
@@ -127,9 +134,9 @@ class HD3QN(nn.Module):
 
         # ========== 阶段 1：Q-loss ==========
         feat_q = self.model.shared(obs)
-        cont_pred_q = self.model.cont_fc(feat_q).detach()
-        q_input_q = torch.cat([feat_q, cont_pred_q], dim=1)
-        q_pred_q = self.model._compute_q(q_input_q)
+        cont_for_q = torch.zeros((obs.shape[0], self.act_dim), dtype=obs.dtype, device=obs.device)
+        cont_for_q.scatter_(1, disc_action_long.unsqueeze(1), cont_action.float().unsqueeze(1))
+        q_pred_q = self.model._compute_q(feat_q, cont_for_q)
         q_selected = q_pred_q.gather(1, disc_action_long.unsqueeze(1)).squeeze(1)
 
         # Double DQN target
@@ -162,8 +169,7 @@ class HD3QN(nn.Module):
 
         feat_c = self.model.shared(obs)
         cont_pred_c = self.model.cont_fc(feat_c)
-        q_input_c = torch.cat([feat_c.detach(), cont_pred_c], dim=1)
-        q_for_cont = self.model._compute_q(q_input_c)
+        q_for_cont = self.model._compute_q(feat_c.detach(), cont_pred_c)
         cont_loss = -q_for_cont.gather(1, disc_action_long.unsqueeze(1)).squeeze(1).mean()
 
         self._set_q_head_requires_grad(True)

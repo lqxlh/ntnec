@@ -89,6 +89,9 @@ def summarize_debug(debug_info):
         "avg_reward":                float(debug_info.get("reward_sum", 0.0)) / steps_count,
         "avg_phi_cost":              float(debug_info.get("avg_cost_sum", 0.0)) / steps_count,
         "avg_task_value":            float(debug_info.get("avg_value_sum", 0.0)) / steps_count,
+        "avg_delay_norm":            float(debug_info.get("avg_delay_norm_sum", 0.0)) / steps_count,
+        "avg_energy_norm":           float(debug_info.get("avg_energy_norm_sum", 0.0)) / steps_count,
+        "avg_value_norm":            float(debug_info.get("avg_value_norm_sum", 0.0)) / steps_count,
         "avg_delay_cost":            float(debug_info.get("avg_delay_cost_sum", 0.0)) / steps_count,
         "avg_energy_cost":           float(debug_info.get("avg_energy_cost_sum", 0.0)) / steps_count,
         "avg_total_energy":          float(debug_info.get("avg_total_energy_sum", 0.0)) / steps_count,
@@ -199,7 +202,7 @@ def build_hd3qn_agent(env):
         obs_dim=obs_shape,
         act_dim=action_dim,
         e_greed=0.9,
-        e_greed_decrement=0.89 / max(200 * steps * M, 1),#调探索率衰减
+        e_greed_decrement=0.89 / max(100 * steps * M, 1),#调探索率衰减
     )
     return agent
 
@@ -441,7 +444,14 @@ def run_training_experiment(result_prefix=experiment_config.MAIN_SIM_PREFIX):
         agent = build_hd3qn_agent(env)
 
         bs_list, md_list, sat_list = build_entities(env)
-        rpm = ReplayMemory.PrioritizedReplayMemory(MEMORY_SIZE) # ← 修改为此处
+        # 改后：所有 PER 参数从 para.py 统一读取
+        rpm = ReplayMemory.PrioritizedReplayMemory(
+            MEMORY_SIZE,
+            alpha=para.PER_ALPHA,
+            beta=para.PER_BETA_INIT,
+            beta_increment=para.PER_BETA_INCREMENT,
+            epsilon=para.PER_EPSILON,
+        )
 
         # ---- Warmup：先填满回放池 ----
         while len(rpm) < MEMORY_WARMUP_SIZE:
@@ -575,6 +585,19 @@ def run_training_experiment(result_prefix=experiment_config.MAIN_SIM_PREFIX):
             )
 
             # 👇 【在这里添加下面这一行，保持 12 个空格缩进】
+            print(
+                f"  [SAT-mask] "
+                f"feasible={eval_metrics.get('sat_mask_feasible_rate', 0.0):.3f} "
+                f"not_visible={eval_metrics.get('sat_mask_not_visible_rate', 0.0):.3f} "
+                f"no_resource={eval_metrics.get('sat_mask_no_resource_rate', 0.0):.3f} "
+                f"budget_fail={eval_metrics.get('sat_mask_non_positive_budget_rate', 0.0):.3f} "
+                f"power_gap={eval_metrics.get('sat_mask_power_infeasible_rate', 0.0):.3f} | "
+                f"budget_gap={eval_metrics.get('sat_mask_remaining_budget_fail_avg', 0.0):.6f}s "
+                f"power_excess={eval_metrics.get('sat_mask_power_excess_ratio_avg', 0.0):.3f} "
+                f"visible_rate={eval_metrics.get('visible_sat_decision_rate', 0.0):.3f} "
+                f"avg_visible={eval_metrics.get('avg_visible_satellites', 0.0):.3f} "
+                f"visible_not_selected={eval_metrics.get('visible_but_not_selected_rate', 0.0):.3f}"
+            )
             agent.alg.scheduler.step()
         train_rewards_all.append(train_rewards)
         eval_rewards_all.append(eval_rewards)

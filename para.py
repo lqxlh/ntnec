@@ -32,12 +32,12 @@ RUN_PROFILES = {
         "memory_warmup_size": 2000,
         "sac_memory_warmup_size": 2000,
         "steps": 200,
-        "max_episode": 400,
+        "max_episode": 200,
         "seed": [1],
         "batch_size": 512,
         "sac_batch_size": 512,
         "eval_interval": 1,
-        "eval_rounds": 1,
+        "eval_rounds": 2,
     },
 }
 
@@ -66,7 +66,7 @@ EVAL_INTERVAL = ACTIVE_PROFILE["eval_interval"]
 EVAL_ROUNDS = ACTIVE_PROFILE["eval_rounds"]
 
 lr_step_size = 200000   # 每100集衰减一次（100×200步×10设备）
-lr_gamma = 0.7        # 学习率乘的系数
+lr_gamma = 0.9        # 学习率乘的系数
 
 # 训练稳定性分析参数：
 # 下面这组参数不改变论文里的 MDP 定义，也不改变状态/动作/奖励本身，
@@ -78,23 +78,23 @@ REWARD_SMOOTH_WINDOW = 5
 # 场景基础参数：
 # 这里对应论文中的 N 个地面 ES、S 颗卫星、M 个移动设备。
 N = 1
-S = 2
+S = 3
 M = 10
 
 # 奖励函数中的权重：
-# 这里直接对应论文代价函数 phi_{m,t} 里的 w_D、w_E、w_V。
-w_t = 0.9
-w_e = 0.1
-# 这里参考目标论文的优化框架，在总时延和总能耗之外，
-# 成功完成高优先级任务的业务收益
-w_v = 0.4
+# 这里对应归一化后的时延、能耗、任务价值三项权衡。
+# 归一化后三项都接近 0~1，权重才具有明确可比性。
+w_t = 0.65
+w_e = 0.25
+# 任务价值是随机任务属性，权重不宜太大，否则会掩盖动作本身造成的时延/能耗差异。
+w_v = 0.10
 
 # 资源配置：
 F_BS = [10e9]
-F_MD = 0.8e9
+F_MD = 0.7e9
 F_MD_MIN = 0.4
 F_MD_MAX = 1.0
-SAT_F = [6e9, 6e9]
+SAT_F = [6e9, 6e9, 6e9]
 SAT_F_MIN = 1.2e9
 SAT_F_MAX = 2.0e9
 BS_F_MIN = 1.0e9
@@ -125,37 +125,42 @@ TASK_B_MIN = int(0.3e6)
 TASK_B_MAX = int(1.8e6)
 TASK_C_MIN = 200
 TASK_C_MAX = 1200
-TASK_GAMMA_MIN = 1.0
-TASK_GAMMA_MAX = 2.0
+TASK_GAMMA_MIN = 0.5
+TASK_GAMMA_MAX = 2.2
 TASK_PRIORITY_MIN = 1
 TASK_PRIORITY_MAX = 3
+
+# 奖励归一化尺度：
+# 时延用最大 deadline 归一化，表示“用了多少个最宽容时限”。
+# 能耗用近期实验中常见单步能耗上界附近的 5J 归一化，避免焦耳量纲压过时延量纲。
+# 任务价值用最大优先级归一化，使 priority=1/2/3 分别约为 0.33/0.67/1.0。
+REWARD_DELAY_NORM = TASK_GAMMA_MAX
+REWARD_ENERGY_NORM = 5.0
+REWARD_VALUE_NORM = TASK_PRIORITY_MAX
 
 # 地面链路参数：
 # 这些值对应论文地面 MEC 基线部分的带宽、噪声、路径损耗和发射功率设定。
 BS_HEIGHT = 30
 GROUND_BW = 2e7
-GROUND_NOISE = 1e-13
+GROUND_NOISE = 1.6e-13#1e-13
 GROUND_GAIN_BETA = 1e-4
 GROUND_PATHLOSS = 3.0
 MD_MAX_POWER = 0.1
 
 # 地面 MEC 拥塞建模：
-# 这里保留地面排队/切换时延近似，用来模拟论文中的“地面侧拥塞成本”。
-# 当前先恢复为较温和的地面拥塞设定，方便单独观察“削弱本地优势”这一步的影响，
-# 避免地面拥塞和本地算力变化同时生效，导致实验解释混在一起。
 GROUND_QUEUE_DELAY_MIN = 0.00
 GROUND_QUEUE_DELAY_MAX = 0.08
 GROUND_HOTSPOT_PROB = 0.35
-GROUND_HOTSPOT_DELAY_EXTRA = 0.10
+GROUND_HOTSPOT_DELAY_EXTRA = 0.3
 GROUND_HANDOVER_DELAY_SCALE = 1.25e9
 ENABLE_GROUND_CONGESTION = 1
 
 # NTN 参数：
 SAT_HEIGHT = 550e3
-SAT_MIN_ELEVATION_DEG = 10.0
+SAT_MIN_ELEVATION_DEG = 5.0
 SAT_BW = 6e7
-SAT_NOISE = 3.1622776601683796e-14#4.80e-13
-SAT_GAIN = 1e5#3162
+SAT_NOISE = 1e-13#3.1622776601683796e-14
+SAT_GAIN = 1e5
 MD_GAIN = 3.162
 ATM_LOSS_LINEAR = 1.4125
 SAT_ETA_D = 0.95
@@ -248,11 +253,11 @@ MAX_PROP_DELAY = MAX_SAT_DISTANCE / LIGHT_SPEED
 
 # 约束惩罚：
 # 这里对应论文奖励函数中的 r_time、r_fre、r_vis、r_prop。
-PENALTY_TIME = -0.8
-PENALTY_RESOURCE = -0.4
-PENALTY_VISIBILITY = -0.3
-PENALTY_PROPAGATION = -0.3
-PENALTY_ZERO_ALLOCATION = -0.2
+PENALTY_TIME = -0.5
+PENALTY_RESOURCE = -0.35
+PENALTY_VISIBILITY = -0.25
+PENALTY_PROPAGATION = -0.25
+PENALTY_ZERO_ALLOCATION = -0.15
 
 # 卫星软约束参数：
 # 这里不是替换论文中的可见性、资源、时延预算、功率可行性等硬约束，
@@ -268,4 +273,26 @@ SAT_TARGET_USAGE = 0.6
 # SAT_LOAD_PENALTY_WEIGHT 控制这项“卫星过载软惩罚”的强度。
 # 这里先取较小值，保证论文主目标仍然是时延-能耗-任务价值权衡，
 # 软惩罚只作为稳定两阶段联合训练的辅助项。
-SAT_LOAD_PENALTY_WEIGHT = 0.2
+SAT_LOAD_PENALTY_WEIGHT = 0.3
+
+# ============================================================
+# PER（优先经验回放）参数
+# ============================================================
+# 优先级指数：控制高 TD-Error 样本被偏爱的程度
+# 0 = 退化为均匀采样，1 = 完全按 TD-Error 排序
+# 当前值 0.6 是 PER 论文推荐的平衡点
+PER_ALPHA = 0.4
+
+# IS 权重初始值：训练中会从这里线性退火到 1.0
+# 偏小 → 早期允许有偏估计，梯度更新更猛；退火到 1.0 后恢复无偏
+PER_BETA_INIT = 0.6
+
+# beta 退火增量（自动按当前模式的总学习步数反算）：
+# 目标：让 beta 恰好在训练结束时从 0.4 退火到 1.0
+# 总 sample() 次数 ≈ max_episode × steps × M ÷ LEARN_FREQ
+# formal: 400 × 200 × 10 ÷ 1 = 800,000 → increment = 0.6 / 800,000 ≈ 7.5e-7
+_per_total_sample_calls = max_episode * steps * M // LEARN_FREQ
+PER_BETA_INCREMENT = 0.4 / max(_per_total_sample_calls, 1)
+
+# 防止优先级为零的平滑常数，通常不需要改动
+PER_EPSILON = 0.01

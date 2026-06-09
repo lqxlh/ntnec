@@ -13,9 +13,9 @@ run_baselines.py — NTN 系统六组基线对比实验
   BL6 · dqn_heuristic   D3QN + 启发式频率：证明混合动作联合学习的收敛优势
 
 使用方法：
-  python run_baselines.py                  # 运行全部 6 个基线
-  python run_baselines.py --only bl1 bl4   # 只运行指定基线
-  python run_baselines.py --skip bl2 bl3   # 跳过指定基线
+  python baseline.py                  # 运行全部 6 个基线
+  python baseline.py --only bl1 bl4   # 只运行指定基线
+  python baseline.py --skip bl2 bl3   # 跳过指定基线
 
 结果保存格式与 HD3QN_t.py 一致，可直接用同一套绘图脚本比较。
 """
@@ -513,7 +513,7 @@ def _run_hd3qn_episode_masked(env, rpm, agent, md_list, bs_list, sat_list,
             # ── 学习 ────────────────────────────────────────────────────
             if len(rpm) > WARMUP_SIZE and (md_idx % LEARN_FREQ == 0):
                 b_obs, b_disc, b_cont, b_rew, b_nobs, b_done, b_nmask = rpm.sample(BATCH_SIZE)
-                tl, ql, cl = agent.learn(b_obs, b_disc, b_cont, b_rew,
+                tl, ql, cl,_  = agent.learn(b_obs, b_disc, b_cont, b_rew,
                                          b_nobs, b_done, next_action_mask=b_nmask)
                 total_losses.append(tl)
                 q_losses.append(ql)
@@ -620,8 +620,8 @@ def run_masked_hd3qn_experiment(baseline_name: str, topo_mask: np.ndarray):
         train_metric_history, eval_metric_history = [], []
         eval_ran_only = []
         best_reward = -float("inf")
-        last_eval_r = None
-        last_eval_dbg = None
+        last_eval_r = 0.0
+        last_eval_dbg = {}
         last_eval_metrics = None
 
         for episode in range(max_episode):
@@ -694,7 +694,7 @@ def run_masked_hd3qn_experiment(baseline_name: str, topo_mask: np.ndarray):
 # ═════════════════════════════════════════════════════════════════════════════
 
 def _run_dqn_heuristic_episode(env, rpm, agent_dqn, md_list, bs_list, sat_list):
-    """BL6 训练回合：D3QN 学习离散动作，频率用启发式公式计算（无 SAC）。"""
+    """BL6 训练回合：D3QN 学习离散动作，频率用启发式公式计算。"""
     total_reward = 0.0
     env.reset(md_list, bs_list, sat_list)
     step_idx = 0
@@ -832,8 +832,8 @@ def run_dqn_heuristic_experiment():
         train_metric_history, eval_metric_history = [], []
         eval_ran_only = []
         best_reward = -float("inf")
-        last_eval_r = None
-        last_eval_dbg = None
+        last_eval_r = 0.0
+        last_eval_dbg = {}
 
         for episode in range(max_episode):
             train_r, train_dbg = _run_dqn_heuristic_episode(

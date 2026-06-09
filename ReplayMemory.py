@@ -1,5 +1,5 @@
 """
-ReplayMemory.py — 经验回放池
+PERReplayMemory.py — 经验回放池
 
 支持两种经验格式（向后兼容旧 5/6 元组，新增 7 元组供 HD3QN 使用）：
 

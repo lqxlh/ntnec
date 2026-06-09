@@ -62,7 +62,7 @@ class SAT:
             math.radians(orbit_cfg["arg_perigee_deg"]),
             math.radians(orbit_cfg["inclination_deg"]),
             math.radians(orbit_cfg["mean_anomaly_deg"]),
-            math.radians(orbit_cfg["mean_motion_rev_per_day"] * 2.0 * math.pi / 1440.0),
+            orbit_cfg["mean_motion_rev_per_day"] * 2.0 * math.pi / 1440.0,
             math.radians(orbit_cfg["raan_deg"]),
         )
         return satrec

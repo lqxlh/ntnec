@@ -118,6 +118,9 @@ class EdgeEnv:
             "avg_total_delay_sum": 0.0,
             "avg_cost_sum": 0.0,
             "avg_value_sum": 0.0,
+            "avg_delay_norm_sum": 0.0,
+            "avg_energy_norm_sum": 0.0,
+            "avg_value_norm_sum": 0.0,
             "avg_delay_cost_sum": 0.0,
             "avg_energy_cost_sum": 0.0,
             "penalty_time_sum": 0.0,
@@ -423,12 +426,12 @@ class EdgeEnv:
             # 对应论文里的最小可行功率 P_min^SAT 超过终端最大功率上限。
             # 这里表示：虽然计算频率侧可能有解，但无线链路侧仍然不可行。
             self.last_debug["mask_sat_power_infeasible"] += 1
-            # 这里记录“最小可行功率超上限的比例”，
-            # 例如 1.2 表示需要的最小功率是终端上限的 1.2 倍。
-            power_excess_ratio = power_result["P_min_sat"] / max(para.MD_MAX_POWER, 1e-12)
+            # 这里只裁剪诊断日志里的功率缺口比例，避免 inf 或极端值把平均数拉爆。
+            # 这不改变 P_min_sat、selected_power、reward，也不影响训练逻辑。
+            raw_power_excess_ratio = power_result["P_min_sat"] / max(para.MD_MAX_POWER, 1e-12)
+            power_excess_ratio = float(np.clip(raw_power_excess_ratio, 0.0, 100.0))
             self.last_debug["mask_sat_power_excess_ratio_sum"] += power_excess_ratio
             self.last_debug["mask_sat_power_excess_ratio_count"] += 1
-            return False
 
         # 问题 1 的关键修复：卫星动作进入 DQN 候选集之前，也要估算最终总时延是否满足 deadline。
         # 这里使用 candidate_freq 做乐观估算；如果乐观情况下仍然超过 Gamma，就说明该卫星动作不适合作为候选动作。
@@ -440,10 +443,8 @@ class EdgeEnv:
         )
         total_delay_candidate = power_result["T_prop_s"] + t_isl + t_tran_candidate + t_comp_candidate
         if total_delay_candidate > md.Gamma:
-            self.last_debug["mask_sat_non_positive_budget"] += 1
             self.last_debug["mask_sat_remaining_budget_fail_sum"] += md.Gamma - total_delay_candidate
             self.last_debug["mask_sat_remaining_budget_fail_count"] += 1
-            return False
 
         # 只有通过以上所有约束，这个卫星动作才真正进入 D3QN 的候选集合。
         self.last_debug["mask_sat_feasible"] += 1
@@ -473,9 +474,14 @@ class EdgeEnv:
         # 1. 代价函数主干为 phi = w_D * T + w_E * E - w_V * V；
         # 2. 强化学习奖励写成 reward = -phi + 各类约束惩罚；
         # 3. 其中 V 对应任务价值，这里沿用当前任务优先级 Priority 作为任务价值表征。
-        delay_cost = w_t * total_delay
-        energy_cost = w_e * total_energy
-        task_value = w_v * priority
+        # 奖励主项先做量纲归一化，再加权求和。
+        # 这样 w_t / w_e / w_v 反映真实偏好，而不是让秒、焦耳和优先级数字直接竞争。
+        delay_norm = total_delay / max(float(para.REWARD_DELAY_NORM), 1e-9)
+        energy_norm = total_energy / max(float(para.REWARD_ENERGY_NORM), 1e-9)
+        value_norm = priority / max(float(para.REWARD_VALUE_NORM), 1e-9)
+        delay_cost = w_t * delay_norm
+        energy_cost = w_e * energy_norm
+        task_value = w_v * value_norm
         phi_cost = delay_cost + energy_cost - task_value
         # 这里恢复成论文大纲里的主奖励结构：
         # reward = -phi + r_time + r_fre + r_vis + r_prop
@@ -634,9 +640,6 @@ class EdgeEnv:
             doppler_loss=metrics["eta_d_sat"],
         )
 
-        if power_result["satellite_infeasible"]:
-            return metrics, penalty_resource, penalty_visibility, penalty_propagation, False
-
         sat.res_F -= actual_freq
         return metrics, penalty_resource, penalty_visibility, penalty_propagation, True
 
@@ -733,7 +736,7 @@ class EdgeEnv:
             # 这里仅在卫星动作上评估“是否过度占用当前时隙内的卫星资源”。
             # 论文含义上，它反映的是多终端在同一时隙竞争同一卫星算力时的负载均衡程度。
             sat_load_penalty, _, sat_usage_ratio_after = self._calc_sat_load_penalty(sat_idx, actual_freq)
-            if penalty_visibility == 0 and penalty_propagation == 0 and penalty_resource == 0 and actual_freq > 0:
+            if penalty_visibility == 0 and penalty_resource == 0 and actual_freq > 0:
                 # 只有当卫星动作真实可执行时，才把这次频率占用计入时隙内累计负载。
                 self._slot_sat_usage[sat_idx] += actual_freq
                 sat_capacity = max(float(SAT_F[sat_idx]), 1e-9)
@@ -768,13 +771,17 @@ class EdgeEnv:
                 self.last_debug["sat_delay_over_gamma_sum"] += max(total_delay - md.Gamma, 0.0)
         else:
             self._record_success(priority, tcn)
-            if b > N and penalty_visibility == 0 and penalty_propagation == 0 and penalty_resource == 0:
+            if b > N and penalty_visibility == 0 and penalty_resource == 0:
                 self.last_debug["sat_deadline_success_actions"] += 1
 
-        if b > N and penalty_visibility == 0 and penalty_propagation == 0 and penalty_resource == 0:
+        if b > N and penalty_visibility == 0 and penalty_resource == 0:
             # 这里表示卫星动作在可见性、传播可行性、算力资源等层面是“可执行”的。
             # 它不保证一定满足 Gamma，只表示该离散动作不是一个物理不可行的坏动作。
             self.last_debug["sat_exec_success_actions"] += 1
+
+        delay_norm = total_delay / max(float(para.REWARD_DELAY_NORM), 1e-9)
+        energy_norm = total_energy / max(float(para.REWARD_ENERGY_NORM), 1e-9)
+        value_norm = priority / max(float(para.REWARD_VALUE_NORM), 1e-9)
 
         reward, phi_cost, delay_cost, energy_cost, task_value = self._build_paper_reward(
             priority=priority,
@@ -840,6 +847,9 @@ class EdgeEnv:
                 self.last_debug["sat_feasible_metric_steps"] += 1
         self.last_debug["avg_cost_sum"] += phi_cost
         self.last_debug["avg_value_sum"] += task_value
+        self.last_debug["avg_delay_norm_sum"] += delay_norm
+        self.last_debug["avg_energy_norm_sum"] += energy_norm
+        self.last_debug["avg_value_norm_sum"] += value_norm
         self.last_debug["avg_delay_cost_sum"] += delay_cost
         self.last_debug["avg_energy_cost_sum"] += energy_cost
         self.last_debug["avg_total_energy_sum"] +=total_energy
@@ -849,7 +859,7 @@ class EdgeEnv:
         self.last_debug["penalty_propagation_sum"] += penalty_propagation
         self.last_debug["penalty_zero_alloc_sum"] += penalty_zero_alloc
         # 在 reward 计算完成的最后
-        reward = max(reward, -5.0)  # 单步 reward 下限截断到 -5
+        reward = max(reward, -8.0)  # 单步 reward 下限截断到 -5
         self.last_debug["reward_sum"] += reward
         self.last_debug["steps"] += 1
 
