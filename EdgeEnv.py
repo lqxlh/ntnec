@@ -4,6 +4,7 @@ import random
 import gym
 import numpy as np
 from gym import spaces
+from itertools import combinations
 
 import para
 import power_control
@@ -38,8 +39,10 @@ class EdgeEnv:
         low = np.tile(np.zeros(self.obs_dim), (M, 1))
         high = np.tile(np.ones(self.obs_dim), (M, 1))
         self.observation_space = spaces.Box(low=low, high=high, shape=(M, self.obs_dim))
-        self.action_space = gym.spaces.Discrete(N + S + 1)
-        self.action_space2 = gym.spaces.Box(low=np.array([0.0]), high=np.array([1.0]), shape=(1,))
+        self.split_sat_pairs = list(combinations(range(S), 2)) if para.ENABLE_TWO_SAT_SPLIT else []
+        self.split_action_start = N + S + 1
+        self.action_space = gym.spaces.Discrete(N + S + 1 + len(self.split_sat_pairs))
+        self.action_space2 = gym.spaces.Box(low=np.zeros(para.CONT_ACTION_DIM), high=np.ones(para.CONT_ACTION_DIM))
         self.state = None
         # 这里缓存“当前状态下每个终端-目标卫星”的随机链路样本。
         # 这样做是为了解决论文模型实现里的一个关键一致性问题：
@@ -62,6 +65,12 @@ class EdgeEnv:
             "local_actions": 0,
             "bs_actions": 0,
             "sat_actions": 0,
+            "split_actions": 0,
+            "split_deadline_success_actions": 0,
+            "split_timeout_actions": 0,
+            "split_delay_over_gamma_sum": 0.0,
+            "split_ratio_sum": 0.0,
+            "split_metric_steps": 0,
             # 这里把原来单一的 sat_success 拆成两类：
             # 1. sat_exec_success_actions：卫星动作在物理层和资源层面真实可执行；
             # 2. sat_deadline_success_actions：卫星动作不仅可执行，而且总时延满足任务时延约束 Gamma。
@@ -149,18 +158,41 @@ class EdgeEnv:
         # 新版论文里卫星动作不仅要满足可见性，还要满足时延预算和功率可行域。
         # 这里在生成动作掩码的同时，也把“卫星为什么被挡掉”记录下来，便于论文调试。
         mask = np.ones(N + S + 1, dtype=bool)
+        if self.split_sat_pairs:
+            mask = np.ones(self.action_space.n, dtype=bool)
         for sat_idx, sat in enumerate(sat_list):
             mask[N + 1 + sat_idx] = self._is_satellite_action_feasible(md, sat, sat_idx, sat_list)
+        for pair_idx, (sat_a, sat_b) in enumerate(self.split_sat_pairs):
+            split_action_idx = self.split_action_start + pair_idx
+            mask[split_action_idx] = bool(mask[N + 1 + sat_a] and mask[N + 1 + sat_b])
         return mask
 
     def decode_frequency(self, action_idx, action_value):
-        # SAC 输出 0~1 连续值，这里按动作类型映射到对应节点的实际频率。
-        action_value = float(np.clip(action_value, 0.0, 1.0))
+        # 连续动作第一维用于普通动作的资源比例；分片动作会额外使用分片比例和第二颗卫星资源比例。
+        action_vec = np.asarray(action_value, dtype=np.float32).reshape(-1)
+        if action_vec.size == 0:
+            action_vec = np.array([0.5], dtype=np.float32)
+        action_value = float(np.clip(action_vec[0], 0.0, 1.0))
         if action_idx == 0:
             return max(action_value, para.F_MD_MIN)
         if 1 <= action_idx <= N:
             return para.BS_F_MIN + action_value * (para.BS_F_MAX - para.BS_F_MIN)
+        if self._is_split_action(action_idx):
+            ratio_raw = float(action_vec[0]) if action_vec.size > 0 else 0.5
+            freq_a_raw = float(action_vec[1]) if action_vec.size > 1 else ratio_raw
+            freq_b_raw = float(action_vec[2]) if action_vec.size > 2 else freq_a_raw
+            split_ratio = para.SPLIT_MIN_RATIO + np.clip(ratio_raw, 0.0, 1.0) * (1.0 - 2.0 * para.SPLIT_MIN_RATIO)
+            freq_a = para.SAT_F_MIN + np.clip(freq_a_raw, 0.0, 1.0) * (para.SAT_F_MAX - para.SAT_F_MIN)
+            freq_b = para.SAT_F_MIN + np.clip(freq_b_raw, 0.0, 1.0) * (para.SAT_F_MAX - para.SAT_F_MIN)
+            return float(split_ratio), float(freq_a), float(freq_b)
         return para.SAT_F_MIN + action_value * (para.SAT_F_MAX - para.SAT_F_MIN)
+
+    def _is_split_action(self, action_idx):
+        return self.split_action_start <= action_idx < self.action_space.n
+
+    def _decode_split_pair(self, action_idx):
+        pair_idx = action_idx - self.split_action_start
+        return self.split_sat_pairs[pair_idx]
 
     def _calc_sat_load_penalty(self, sat_idx, actual_freq):
         # 这里构造一个“卫星过载软惩罚”：
@@ -537,6 +569,15 @@ class EdgeEnv:
             "free_space_denominator": 0.0,
             "rician_fading": 0.0,
             "access_sat_id": 0,
+            "T_split_s": 0.0,
+            "E_split_s": 0.0,
+            "split_ratio": 0.0,
+            "split_sat_a": -1,
+            "split_sat_b": -1,
+            "split_T_part_a": 0.0,
+            "split_T_part_b": 0.0,
+            "split_E_part_a": 0.0,
+            "split_E_part_b": 0.0,
         }
 
     def _compute_local_metrics(self, md, actual_freq):
@@ -643,6 +684,56 @@ class EdgeEnv:
         sat.res_F -= actual_freq
         return metrics, penalty_resource, penalty_visibility, penalty_propagation, True
 
+    def _compute_split_satellite_metrics(self, md, sat_list, sat_a_idx, sat_b_idx, split_ratio, freq_a, freq_b):
+        metrics = self._empty_transition_metrics()
+        penalty_resource = 0.0
+        penalty_visibility = 0.0
+        penalty_propagation = 0.0
+
+        original_b = md.B
+        original_c = md.C
+        part_a_bits = max(int(original_b * split_ratio), 1)
+        part_b_bits = max(original_b - part_a_bits, 1)
+
+        md.B = part_a_bits
+        metrics_a, res_pen_a, vis_pen_a, prop_pen_a, ok_a = self._compute_satellite_metrics(
+            md, sat_list[sat_a_idx], sat_a_idx, sat_list, freq_a
+        )
+
+        md.B = part_b_bits
+        metrics_b, res_pen_b, vis_pen_b, prop_pen_b, ok_b = self._compute_satellite_metrics(
+            md, sat_list[sat_b_idx], sat_b_idx, sat_list, freq_b
+        )
+        md.B = original_b
+        md.C = original_c
+
+        penalty_resource += res_pen_a + res_pen_b
+        penalty_visibility += vis_pen_a + vis_pen_b
+        penalty_propagation += prop_pen_a + prop_pen_b
+
+        delay_a = metrics_a["T_prop_s"] + metrics_a["T_isl_s"] + metrics_a["T_tran_s"] + metrics_a["T_comp_s"]
+        delay_b = metrics_b["T_prop_s"] + metrics_b["T_isl_s"] + metrics_b["T_tran_s"] + metrics_b["T_comp_s"]
+        energy_a = metrics_a["E_tran_s"] + metrics_a["E_comp_s"]
+        energy_b = metrics_b["E_tran_s"] + metrics_b["E_comp_s"]
+
+        metrics.update(metrics_a)
+        metrics["T_split_s"] = max(delay_a, delay_b) + para.SPLIT_MERGE_DELAY
+        metrics["E_split_s"] = energy_a + energy_b + para.SPLIT_EXTRA_ENERGY
+        metrics["split_ratio"] = float(split_ratio)
+        metrics["split_sat_a"] = int(sat_a_idx)
+        metrics["split_sat_b"] = int(sat_b_idx)
+        metrics["split_T_part_a"] = delay_a
+        metrics["split_T_part_b"] = delay_b
+        metrics["split_E_part_a"] = energy_a
+        metrics["split_E_part_b"] = energy_b
+        metrics["T_tran_s"] = metrics_a["T_tran_s"] + metrics_b["T_tran_s"]
+        metrics["E_tran_s"] = metrics_a["E_tran_s"] + metrics_b["E_tran_s"]
+        metrics["T_comp_s"] = max(metrics_a["T_comp_s"], metrics_b["T_comp_s"])
+        metrics["E_comp_s"] = metrics_a["E_comp_s"] + metrics_b["E_comp_s"] + para.SPLIT_EXTRA_ENERGY
+        metrics["T_prop_s"] = max(metrics_a["T_prop_s"], metrics_b["T_prop_s"])
+        metrics["T_isl_s"] = max(metrics_a["T_isl_s"], metrics_b["T_isl_s"])
+        return metrics, penalty_resource, penalty_visibility, penalty_propagation, bool(ok_a and ok_b)
+
     def _aggregate_total_delay_energy(self, action_idx, metrics):
         if action_idx == 0:
             total_delay = metrics["T_loc"]
@@ -650,6 +741,9 @@ class EdgeEnv:
         elif 1 <= action_idx <= N:
             total_delay = metrics["T_tran_g"] + metrics["T_switch_g"] + metrics["T_queue_g"] + metrics["T_comp_g"]
             total_energy = metrics["E_tran_g"] + metrics["E_comp_g"]
+        elif self._is_split_action(action_idx):
+            total_delay = metrics["T_split_s"]
+            total_energy = metrics["E_split_s"]
         else:
             # 新版卫星总时延：
             # T_SEC = T_prop + T_tran,S + T_ISL + T_comp,S
@@ -678,7 +772,7 @@ class EdgeEnv:
         if selected_visible_sat_count > 0 and b <= N:
             self.last_debug["sat_visible_not_selected"] += 1
 
-        actual_freq = self.decode_frequency(b, float(f))
+        actual_freq = self.decode_frequency(b, f)
 
         if b == 0:
             self.last_debug["local_actions"] += 1
@@ -691,6 +785,25 @@ class EdgeEnv:
             metrics, resource_penalty, propagation_penalty, _ = self._compute_ground_metrics(md, bs, b, actual_freq)
             penalty_resource += resource_penalty
             penalty_propagation += propagation_penalty
+            if resource_penalty != 0:
+                self.last_debug["resource_penalty"] += 1
+            if propagation_penalty != 0:
+                self.last_debug["propagation_penalty"] += 1
+        elif self._is_split_action(b):
+            self.last_debug["split_actions"] += 1
+            self.last_debug["sat_actions"] += 1
+            sat_a_idx, sat_b_idx = self._decode_split_pair(b)
+            split_ratio, freq_a, freq_b = actual_freq
+            metrics, resource_penalty, visibility_penalty, propagation_penalty, _ = self._compute_split_satellite_metrics(
+                md, sat_list, sat_a_idx, sat_b_idx, split_ratio, freq_a, freq_b
+            )
+            penalty_resource += resource_penalty
+            penalty_visibility += visibility_penalty
+            penalty_propagation += propagation_penalty + para.SPLIT_OVERHEAD_PENALTY
+            self.last_debug["split_ratio_sum"] += split_ratio
+            self.last_debug["split_metric_steps"] += 1
+            if visibility_penalty != 0:
+                self.last_debug["sat_invalid_visibility"] += 1
             if resource_penalty != 0:
                 self.last_debug["resource_penalty"] += 1
             if propagation_penalty != 0:
@@ -731,7 +844,7 @@ class EdgeEnv:
         sat_usage_ratio_after = 0.0
         sat_peak_usage_ratio = 0.0
 
-        if b > N:
+        if b > N and not self._is_split_action(b):
             sat_idx = b - (N + 1)
             # 这里仅在卫星动作上评估“是否过度占用当前时隙内的卫星资源”。
             # 论文含义上，它反映的是多终端在同一时隙竞争同一卫星算力时的负载均衡程度。
@@ -741,6 +854,30 @@ class EdgeEnv:
                 self._slot_sat_usage[sat_idx] += actual_freq
                 sat_capacity = max(float(SAT_F[sat_idx]), 1e-9)
                 sat_usage_ratio_after = float(np.clip(self._slot_sat_usage[sat_idx] / sat_capacity, 0.0, 1.5))
+                sat_peak_usage_ratio = max(
+                    float(np.clip(self._slot_sat_usage[idx] / max(float(SAT_F[idx]), 1e-9), 0.0, 1.5))
+                    for idx in range(S)
+                )
+                self.last_debug["sat_usage_ratio_sum"] += sat_usage_ratio_after
+                self.last_debug["sat_peak_usage_ratio_sum"] += sat_peak_usage_ratio
+                self.last_debug["sat_peak_usage_ratio_max"] = max(
+                    self.last_debug["sat_peak_usage_ratio_max"],
+                    sat_peak_usage_ratio,
+                )
+                if sat_load_penalty != 0.0:
+                    self.last_debug["sat_load_penalty_count"] += 1
+                    self.last_debug["sat_load_penalty_sum"] += sat_load_penalty
+        elif self._is_split_action(b):
+            sat_a_idx, sat_b_idx = self._decode_split_pair(b)
+            split_ratio, freq_a, freq_b = actual_freq
+            # 两星分片会同时占用两颗卫星的时隙算力，因此负载软惩罚也要分别计算。
+            sat_load_penalty_a, _, usage_a_after = self._calc_sat_load_penalty(sat_a_idx, freq_a)
+            sat_load_penalty_b, _, usage_b_after = self._calc_sat_load_penalty(sat_b_idx, freq_b)
+            sat_load_penalty = sat_load_penalty_a + sat_load_penalty_b
+            if penalty_visibility == 0 and penalty_resource == 0 and freq_a > 0 and freq_b > 0:
+                self._slot_sat_usage[sat_a_idx] += freq_a
+                self._slot_sat_usage[sat_b_idx] += freq_b
+                sat_usage_ratio_after = float((usage_a_after + usage_b_after) / 2.0)
                 sat_peak_usage_ratio = max(
                     float(np.clip(self._slot_sat_usage[idx] / max(float(SAT_F[idx]), 1e-9), 0.0, 1.5))
                     for idx in range(S)
@@ -769,10 +906,15 @@ class EdgeEnv:
                 # 便于论文里区分“卫星可执行成功率”和“卫星时延成功率”。
                 self.last_debug["sat_timeout_actions"] += 1
                 self.last_debug["sat_delay_over_gamma_sum"] += max(total_delay - md.Gamma, 0.0)
+                if self._is_split_action(b):
+                    self.last_debug["split_timeout_actions"] += 1
+                    self.last_debug["split_delay_over_gamma_sum"] += max(total_delay - md.Gamma, 0.0)
         else:
             self._record_success(priority, tcn)
             if b > N and penalty_visibility == 0 and penalty_resource == 0:
                 self.last_debug["sat_deadline_success_actions"] += 1
+                if self._is_split_action(b):
+                    self.last_debug["split_deadline_success_actions"] += 1
 
         if b > N and penalty_visibility == 0 and penalty_resource == 0:
             # 这里表示卫星动作在可见性、传播可行性、算力资源等层面是“可执行”的。
@@ -812,6 +954,11 @@ class EdgeEnv:
             tran_energy = metrics["E_tran_g"]
             phi_p = w_t * tran_delay + w_e * tran_energy
             phi_pmax = w_t * metrics["T_tran_pmax"] + w_e * metrics["E_tran_pmax"]
+        elif self._is_split_action(b):
+            tran_delay = metrics["T_tran_s"]
+            tran_energy = metrics["E_tran_s"]
+            phi_p = w_t * tran_delay + w_e * tran_energy
+            phi_pmax = phi_p
         else:
             tran_delay = metrics["T_tran_s"]
             tran_energy = metrics["E_tran_s"]
@@ -834,7 +981,7 @@ class EdgeEnv:
         self.last_debug["avg_doppler_shift_sat_sum"] += metrics["doppler_shift_sat"]
         self.last_debug["avg_eta_d_sat_sum"] += metrics["eta_d_sat"]
         self.last_debug["avg_wavelength_sat_sum"] += metrics["wavelength_sat"]
-        if b > N:
+        if b > N and not self._is_split_action(b):
             self.last_debug["sat_metric_steps"] += 1
             # 这里单独记录“卫星动作且真实可行”的样本统计。
             # 论文里像 g_bar_s、P_min_sat、p_star_sat 这类量更适合在“真正可执行的卫星卸载样本”上解释，

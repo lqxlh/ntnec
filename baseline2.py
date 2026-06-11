@@ -10,14 +10,14 @@ run_baselines.py — NTN 系统六组基线对比实验
 维度二：算法对比实验（证明 HD3QN 的先进性）
   BL4 · random_equal    随机分流 + 算力平分：性能下限
   BL5 · greedy_delay    贪心时延最优：证明多目标联合优化的必要性
-  BL6 · dqn_heuristic   D3QN + 启发式频率：证明混合动作联合学习的收敛优势
+  BL6 · dqn_heuristic   DDQN（无 Dueling）+ 启发式频率：证明混合动作联合学习的收敛优势
 
 使用方法：
   python baseline.py                  # 运行全部 6 个基线
   python baseline.py --only bl1 bl4   # 只运行指定基线
   python baseline.py --skip bl2 bl3   # 跳过指定基线
 
-结果保存格式与 PHD3QN_t.py 一致，可直接用同一套绘图脚本比较。
+结果保存格式与 HD3QN_t.py 一致，可直接用同一套绘图脚本比较。
 """
 
 import argparse
@@ -83,6 +83,34 @@ TOPO_NO_SAT[: N + 1] = True
 TOPO_NO_GNB = np.ones(ACTION_DIM, dtype=bool)
 TOPO_NO_GNB[1: N + 1] = False
 
+# ─────────────────────────────────────────────────────────────────────────────
+# BL6 专用 — 普通 DDQN 网络（无 Dueling，弱于 D3QN，用作对比基线）
+# ─────────────────────────────────────────────────────────────────────────────
+
+class SimpleDDQNModel(torch.nn.Module):
+    """普通 DDQN 网络：无 Dueling Value/Advantage 分流，单 MLP 直接输出 Q 值。
+
+    与 D3QN.Model 保持相同输入输出接口（obs → Q_values），
+    可直接传入 D3QN.DDQN 算法类复用 Double-DQN 更新逻辑。
+
+    刻意弱化：
+      · 去掉 Dueling 结构（单流 vs 双流）
+      · hidden_dim=128（D3QN 通常 ≥256）
+    """
+    def __init__(self, obs_dim: int, act_dim: int, hidden_dim: int = 128):
+        super().__init__()
+        self.net = torch.nn.Sequential(
+            torch.nn.Linear(obs_dim, hidden_dim),
+            torch.nn.ReLU(),
+            torch.nn.Linear(hidden_dim, hidden_dim),
+            torch.nn.ReLU(),
+            torch.nn.Linear(hidden_dim, act_dim),
+        )
+
+    def forward(self, obs):
+        return self.net(obs)
+
+
 # 结果前缀映射
 BL_PREFIX = {
     "bl1": "baselines_local_only",
@@ -99,7 +127,7 @@ BL_PREFIX = {
 # ═════════════════════════════════════════════════════════════════════════════
 
 def build_entities(env):
-    """初始化 BS / SAT / MD 列表（与 PHD3QN_t.py 完全一致）。"""
+    """初始化 BS / SAT / MD 列表（与 HD3QN_t.py 完全一致）。"""
     bs_list, md_list, sat_list = [], [], []
     for n in range(N):
         bs = BS.BS(n, F_BS[n],
@@ -137,7 +165,7 @@ def compute_smoothed_value(history, window=REWARD_SMOOTH_WINDOW):
 
 
 def summarize_debug(debug_info):
-    """复用 PHD3QN_t.py / D3SAC.py 的 summarize_debug 逻辑，保证字段一致。"""
+    """复用 HD3QN_t.py / D3SAC.py 的 summarize_debug 逻辑，保证字段一致。"""
     n = max(float(debug_info.get("steps", 0.0)), 1.0)
     sat_act = float(debug_info.get("sat_actions", 0.0))
     split_act = float(debug_info.get("split_actions", 0.0))
@@ -732,11 +760,11 @@ def run_masked_hd3qn_experiment(baseline_name: str, topo_mask: np.ndarray):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 七、BL6 · D3QN + 启发式频率（算法对比）
+# 七、BL6 · DDQN（无 Dueling）+ 启发式频率（算法对比）
 # ═════════════════════════════════════════════════════════════════════════════
 
 def _run_dqn_heuristic_episode(env, rpm, agent_dqn, md_list, bs_list, sat_list):
-    """BL6 训练回合：D3QN 学习离散动作，频率用启发式公式计算。"""
+    """BL6 训练回合：DDQN 学习离散动作，频率用启发式公式计算。"""
     total_reward = 0.0
     env.reset(md_list, bs_list, sat_list)
     step_idx = 0
@@ -795,7 +823,7 @@ def _run_dqn_heuristic_episode(env, rpm, agent_dqn, md_list, bs_list, sat_list):
 
 
 def _eval_dqn_heuristic(env, agent_dqn, md_list, bs_list, sat_list, eval_rounds=1):
-    """BL6 评估：D3QN 贪心选动作，频率用启发式公式。"""
+    """BL6 评估：DDQN 贪心选动作，频率用启发式公式。"""
     rewards, debug_list = [], []
     for _ in range(eval_rounds):
         env.reset(md_list, bs_list, sat_list)
@@ -834,7 +862,7 @@ def run_dqn_heuristic_experiment():
     prefix = BL_PREFIX["bl6"]
     print(f"\n{'=' * 60}")
     print(f"[BL6] 开始: {prefix}")
-    print(f"  D3QN（离散）+ 启发式频率（连续，不学习）")
+    print(f"  DDQN（离散，无 Dueling）+ 启发式频率（连续，不学习）")
     print(f"  证明目标：混合动作联合学习 >> 割裂的离散+启发式策略")
     print(f"  Episodes: {max_episode}  |  Steps/ep: {steps}  |  Seed: {SEED}")
     print("=" * 60)
@@ -852,8 +880,8 @@ def run_dqn_heuristic_experiment():
         obs_shape = env.observation_space.shape[1]
         action_dim = env.action_space.n
 
-        # 使用 D3QN（原版 Dueling DDQN，非 HD3QN）
-        model_dqn = D3QN.Model(obs_dim=obs_shape, act_dim=action_dim)
+        # 使用 SimpleDDQNModel（普通 DDQN，无 Dueling，作为弱化对比基线）
+        model_dqn = SimpleDDQNModel(obs_dim=obs_shape, act_dim=action_dim)
         alg_dqn = D3QN.DDQN(model_dqn, act_dim=action_dim, gamma=DQN_GAMMA, lr=LEARNING_RATE)
         agent_dqn = D3QN.Agent(
             alg_dqn, obs_dim=obs_shape, act_dim=action_dim,
@@ -966,7 +994,7 @@ BL_DESCRIPTIONS = {
     "bl3": "No-gNB         — 无基站纯卫星+本地（拓扑消融）",
     "bl4": "Random+Equal   — 随机分流+算力平分（算法对比）",
     "bl5": "Greedy-Delay   — 贪心时延最优（算法对比）",
-    "bl6": "DQN+Heuristic  — D3QN离散+启发式频率（算法对比）",
+    "bl6": "DQN+Heuristic  — DDQN离散(无Dueling)+启发式频率（算法对比）",
 }
 
 

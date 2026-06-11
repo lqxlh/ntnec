@@ -71,6 +71,10 @@ REWARD_SMOOTH_WINDOW = para.REWARD_SMOOTH_WINDOW
 def summarize_debug(debug_info):
     steps_count    = max(float(debug_info.get("steps", 0.0)), 1.0)
     sat_actions    = float(debug_info.get("sat_actions", 0.0))
+    split_actions  = float(debug_info.get("split_actions", 0.0))
+    split_metric_steps = max(float(debug_info.get("split_metric_steps", 0.0)), 1.0)
+    split_timeout_actions = float(debug_info.get("split_timeout_actions", 0.0))
+    split_success_actions = float(debug_info.get("split_deadline_success_actions", 0.0))
     sat_metric_steps = max(float(debug_info.get("sat_metric_steps", 0.0)), 1.0)
     visible_decisions = float(debug_info.get("visible_sat_decisions", 0.0))
     visible_sat_total_count = float(debug_info.get("visible_sat_total_count", 0.0))
@@ -135,6 +139,12 @@ def summarize_debug(debug_info):
         "avg_sat_peak_usage_ratio_on_feasible_sat": float(debug_info.get("sat_peak_usage_ratio_sum", 0.0)) / sat_feasible_metric_steps,
         "max_sat_peak_usage_ratio": float(debug_info.get("sat_peak_usage_ratio_max", 0.0)),
         "sat_usage_rate":           sat_actions / steps_count,
+        "split_usage_rate":         split_actions / steps_count,
+        "split_in_sat_rate":        split_actions / max(sat_actions, 1.0),
+        "split_deadline_success_rate": split_success_actions / max(split_actions, 1.0),
+        "split_timeout_rate":       split_timeout_actions / max(split_actions, 1.0),
+        "avg_split_delay_over_gamma": float(debug_info.get("split_delay_over_gamma_sum", 0.0)) / max(split_timeout_actions, 1.0),
+        "avg_split_ratio":          float(debug_info.get("split_ratio_sum", 0.0)) / split_metric_steps,
         "sat_exec_success_rate":    sat_exec_success_actions / max(sat_actions, 1.0),
         "sat_deadline_success_rate": sat_deadline_success_actions / max(sat_actions, 1.0),
         "sat_timeout_rate":         sat_timeout_actions / max(sat_actions, 1.0),
@@ -156,6 +166,7 @@ def summarize_debug(debug_info):
         "local_actions":  float(debug_info.get("local_actions", 0.0)),
         "bs_actions":     float(debug_info.get("bs_actions", 0.0)),
         "sat_actions_count": float(debug_info.get("sat_actions", 0.0)),
+        "split_actions":  split_actions,
         # ===== 新增结束 =====
     }
 
@@ -267,15 +278,6 @@ def run_episode(env, rpm, agent, md_list, bs_list, sat_list):
 
             # ---- 学习 ----
             if len(rpm) > MEMORY_WARMUP_SIZE and (md_idx % LEARN_FREQ == 0):
-                # (b_obs, b_disc, b_cont, b_rew,
-                #  b_nobs, b_done, b_nmask) = rpm.sample(BATCH_SIZE)
-                #
-                # tl, ql, cl = agent.learn(
-                #     b_obs, b_disc, b_cont, b_rew,
-                #     b_nobs, b_done,
-                #     next_action_mask=b_nmask,
-                # )
-                # 【修改后】PER 采样逻辑：同时解包出树节点索引 idxs 和采样权重 is_weights
                 (b_obs, b_disc, b_cont, b_rew,
                  b_nobs, b_done, b_nmask), idxs, is_weights = rpm.sample(BATCH_SIZE)
 
@@ -315,21 +317,23 @@ def evaluate(env, agent, agent2, md_list, bs_list, sat_list, eval_rounds=2):
     eval_rewards = []
     eval_debug_list = []
 
-    # === 新增：Q 值诊断统计 ===
+    # Q ???????????? BS?? SAT?????????????????
     q_diag = {
-        "q_local_sum": 0.0, "q_bs_sum": 0.0, "q_sat_sum": 0.0,
-        "q_local_count": 0, "q_bs_count": 0, "q_sat_count": 0,
+        "q_local_sum": 0.0, "q_bs_sum": 0.0, "q_sat_sum": 0.0, "q_split_sum": 0.0,
+        "q_local_count": 0, "q_bs_count": 0, "q_sat_count": 0, "q_split_count": 0,
         "q_max_minus_min_sum": 0.0,
-        "q_local_minus_max_sum": 0.0,  # local 比最大动作低多少
+        "q_local_minus_max_sum": 0.0,
         "decision_count": 0,
-        # 按"local 是否合法"分桶统计
-        "q_local_when_legal_sum": 0.0, "q_local_when_legal_count": 0,
+        "local_argmax_count": 0,
+        "bs_argmax_count": 0,
+        "sat_argmax_count": 0,
+        "split_argmax_count": 0,
+        "q_local_when_legal_sum": 0.0,
+        "q_local_when_legal_count": 0,
         "q_max_when_local_legal_sum": 0.0,
-        # 记录"local 合法但没被选"的次数
         "local_legal_not_chosen": 0,
         "local_legal_total": 0,
     }
-    # === 新增结束 ===
 
     for _ in range(eval_rounds):
         env.reset(md_list, bs_list, sat_list)
@@ -347,41 +351,52 @@ def evaluate(env, agent, agent2, md_list, bs_list, sat_list, eval_rounds=2):
 
             for md_idx in range(M):
                 action_mask = env.get_action_mask(md_list[md_idx], sat_list)
-
-                # === 新增：评估前先看 Q 值 ===
                 q_vals = agent.predict_q_values(obs[md_idx], action_mask=action_mask)
-                # 收集所有合法动作的 Q 值
-                if action_mask[0]:  # local 合法
+
+                if action_mask[0]:
                     q_diag["q_local_sum"] += float(q_vals[0])
                     q_diag["q_local_count"] += 1
-                if action_mask[1]:  # bs 合法
-                    q_diag["q_bs_sum"] += float(q_vals[1])
-                    q_diag["q_bs_count"] += 1
-                if action_mask[2]:  # sat 合法
-                    q_diag["q_sat_sum"] += float(q_vals[2])
-                    q_diag["q_sat_count"] += 1
-                # 合法动作里的 Q 范围
+                for act_idx in range(1, N + 1):
+                    if action_mask[act_idx]:
+                        q_diag["q_bs_sum"] += float(q_vals[act_idx])
+                        q_diag["q_bs_count"] += 1
+                for act_idx in range(N + 1, N + S + 1):
+                    if action_mask[act_idx]:
+                        q_diag["q_sat_sum"] += float(q_vals[act_idx])
+                        q_diag["q_sat_count"] += 1
+                for act_idx in range(N + S + 1, len(action_mask)):
+                    if action_mask[act_idx]:
+                        q_diag["q_split_sum"] += float(q_vals[act_idx])
+                        q_diag["q_split_count"] += 1
+
                 legal_qs = [float(q_vals[i]) for i in range(len(action_mask)) if action_mask[i]]
                 if len(legal_qs) >= 2:
                     q_diag["q_max_minus_min_sum"] += max(legal_qs) - min(legal_qs)
                     q_diag["decision_count"] += 1
-                # local 合法时，与最大值的差距
+                    legal_argmax_scores = [float(q_vals[i]) if action_mask[i] else -1e9 for i in range(len(action_mask))]
+                    argmax_action = int(np.argmax(legal_argmax_scores))
+                    if argmax_action == 0:
+                        q_diag["local_argmax_count"] += 1
+                    elif 1 <= argmax_action <= N:
+                        q_diag["bs_argmax_count"] += 1
+                    elif N + 1 <= argmax_action <= N + S:
+                        q_diag["sat_argmax_count"] += 1
+                    else:
+                        q_diag["split_argmax_count"] += 1
+
                 if action_mask[0]:
                     q_diag["local_legal_total"] += 1
                     q_diag["q_local_when_legal_sum"] += float(q_vals[0])
                     q_diag["q_local_when_legal_count"] += 1
-                    q_diag["q_max_when_local_legal_sum"] += max(legal_qs)
-                    q_diag["q_local_minus_max_sum"] += float(q_vals[0]) - max(legal_qs)
-                # === 新增结束 ===
+                    if legal_qs:
+                        q_diag["q_max_when_local_legal_sum"] += max(legal_qs)
+                        q_diag["q_local_minus_max_sum"] += float(q_vals[0]) - max(legal_qs)
 
                 discrete_action = agent.predict(obs[md_idx], action_mask=action_mask)
-                # 获取连续动作（修改：显式传入 explore=False，关闭高斯噪声，保持确定性最佳算力输出）
                 cont_action = agent.get_continuous(obs[md_idx], discrete_action, explore=False)
 
-                # === 新增：local 合法但没选 local 的统计 ===
                 if action_mask[0] and discrete_action != 0:
                     q_diag["local_legal_not_chosen"] += 1
-                # === 新增结束 ===
 
                 obs, reward, _, tcn, _, _, _, _, _, _, _ = env.step(
                     md_idx, discrete_action, cont_action, tcn, bs_list, md_list, sat_list
@@ -399,14 +414,18 @@ def evaluate(env, agent, agent2, md_list, bs_list, sat_list, eval_rounds=2):
         for key in eval_debug_list[0].keys():
             merged_debug[key] = float(np.mean([item[key] for item in eval_debug_list]))
 
-    # === 新增：把诊断统计塞进 merged_debug，让外层 print 能用上 ===
     def _safe_avg(s, c):
         return s / c if c > 0 else 0.0
 
     merged_debug["q_local_avg"] = _safe_avg(q_diag["q_local_sum"], q_diag["q_local_count"])
     merged_debug["q_bs_avg"] = _safe_avg(q_diag["q_bs_sum"], q_diag["q_bs_count"])
     merged_debug["q_sat_avg"] = _safe_avg(q_diag["q_sat_sum"], q_diag["q_sat_count"])
+    merged_debug["q_split_avg"] = _safe_avg(q_diag["q_split_sum"], q_diag["q_split_count"])
     merged_debug["q_spread_avg"] = _safe_avg(q_diag["q_max_minus_min_sum"], q_diag["decision_count"])
+    merged_debug["q_local_argmax_rate"] = _safe_avg(q_diag["local_argmax_count"], q_diag["decision_count"])
+    merged_debug["q_bs_argmax_rate"] = _safe_avg(q_diag["bs_argmax_count"], q_diag["decision_count"])
+    merged_debug["q_sat_argmax_rate"] = _safe_avg(q_diag["sat_argmax_count"], q_diag["decision_count"])
+    merged_debug["q_split_argmax_rate"] = _safe_avg(q_diag["split_argmax_count"], q_diag["decision_count"])
     merged_debug["q_local_gap_to_max_avg"] = _safe_avg(
         q_diag["q_local_minus_max_sum"], q_diag["q_local_when_legal_count"]
     )
@@ -416,14 +435,9 @@ def evaluate(env, agent, agent2, md_list, bs_list, sat_list, eval_rounds=2):
     merged_debug["local_legal_rate"] = _safe_avg(
         q_diag["local_legal_total"], q_diag["decision_count"]
     )
-    # === 新增结束 ===
 
     return float(np.mean(eval_rewards)), merged_debug
 
-
-# ---------------------------------------------------------------------------
-# 主训练流程（结构与原版完全一致，只替换智能体内部）
-# ---------------------------------------------------------------------------
 
 def run_training_experiment(result_prefix=experiment_config.MAIN_SIM_PREFIX):
     os.makedirs("models", exist_ok=True)
@@ -550,11 +564,13 @@ def run_training_experiment(result_prefix=experiment_config.MAIN_SIM_PREFIX):
                 f"train(local={train_debug['local_actions']:.1f},"
                 f"bs={train_debug['bs_actions']:.1f},"
                 f"sat={train_debug['sat_actions']:.1f},"
+                f"split={train_debug.get('split_actions', 0.0):.1f},"
                 f"avg_prop={train_avg_prop_delay:.6f}s,"
                 f"avg_total={train_avg_total_delay:.6f}s) | "
                 f"eval(local={eval_debug['local_actions']:.1f},"
                 f"bs={eval_debug['bs_actions']:.1f},"
-                f"sat={eval_debug['sat_actions']:.1f}) | "
+                f"sat={eval_debug['sat_actions']:.1f},"
+                f"split={eval_debug.get('split_actions', 0.0):.1f}) | "
                 f"avg_prop={avg_prop_delay:.6f}s avg_total={avg_total_delay:.6f}s "
                 f"avg_energy={eval_metrics['avg_total_energy']:.6f}J "
                 f"avg_reward={avg_reward:.3f} | "
@@ -577,11 +593,26 @@ def run_training_experiment(result_prefix=experiment_config.MAIN_SIM_PREFIX):
                 f"  [Q-diag] "
                 f"Q_local={eval_debug.get('q_local_avg', 0.0):.3f} "
                 f"Q_bs={eval_debug.get('q_bs_avg', 0.0):.3f} "
-                f"Q_sat={eval_debug.get('q_sat_avg', 0.0):.3f} | "
+                f"Q_sat={eval_debug.get('q_sat_avg', 0.0):.3f} "
+                f"Q_split={eval_debug.get('q_split_avg', 0.0):.3f} | "
                 f"spread={eval_debug.get('q_spread_avg', 0.0):.3f} | "
+                f"argmax(local={eval_debug.get('q_local_argmax_rate', 0.0):.3f},"
+                f"bs={eval_debug.get('q_bs_argmax_rate', 0.0):.3f},"
+                f"sat={eval_debug.get('q_sat_argmax_rate', 0.0):.3f},"
+                f"split={eval_debug.get('q_split_argmax_rate', 0.0):.3f}) | "
                 f"local_legal_rate={eval_debug.get('local_legal_rate', 0.0):.3f} "
                 f"local_gap_to_max={eval_debug.get('q_local_gap_to_max_avg', 0.0):.3f} "
                 f"local_skip_rate={eval_debug.get('local_legal_not_chosen_rate', 0.0):.3f}"
+            )
+
+            print(
+                f"  [Split] "
+                f"usage={eval_metrics.get('split_usage_rate', 0.0):.3f} "
+                f"in_sat={eval_metrics.get('split_in_sat_rate', 0.0):.3f} "
+                f"deadline={eval_metrics.get('split_deadline_success_rate', 0.0):.3f} "
+                f"timeout={eval_metrics.get('split_timeout_rate', 0.0):.3f} "
+                f"avg_ratio={eval_metrics.get('avg_split_ratio', 0.0):.3f} "
+                f"over_gamma={eval_metrics.get('avg_split_delay_over_gamma', 0.0):.6f}s"
             )
 
             # 👇 【在这里添加下面这一行，保持 12 个空格缩进】

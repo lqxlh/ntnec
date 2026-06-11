@@ -167,7 +167,7 @@ def draw_baseline_convergence_comparison(plt, result_dir, result_prefix, output_
 
     # 定义需要对比的算法前缀和对应 label
     comparison_targets = [
-        ("Proposed HD3QN", result_prefix, "#1f77b4"),
+        ("Proposed PHD3QN", result_prefix, "#1f77b4"),
         ("DQN + Heuristic (BL6)", "baselines_dqn_heuristic", "#ff7f0e"),
         ("Greedy-Delay (BL5)", "baselines_greedy_delay", "#d62728")
     ]
@@ -208,7 +208,7 @@ def draw_qos_bar_charts(plt, result_dir, result_prefix, output_path, steady_epis
 
     # 完整算法字典，若未来有新基线，会自动在此检索
     algo_dict = {
-        "Proposed\nHD3QN": result_prefix,
+        "Proposed\nPHD3QN": result_prefix,
         "Local-Only\n(BL1)": "baselines_local_only",
         "No-Sat\n(BL2)": "baselines_no_satellite",
         "No-gNB\n(BL3)": "baselines_no_gnb",

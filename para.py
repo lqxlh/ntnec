@@ -32,10 +32,10 @@ RUN_PROFILES = {
         "memory_warmup_size": 2000,
         "sac_memory_warmup_size": 2000,
         "steps": 200,
-        "max_episode": 200,
+        "max_episode": 100,
         "seed": [1],
-        "batch_size": 512,
-        "sac_batch_size": 512,
+        "batch_size": 256,
+        "sac_batch_size": 256,
         "eval_interval": 1,
         "eval_rounds": 2,
     },
@@ -65,8 +65,6 @@ TAU = 0.005
 EVAL_INTERVAL = ACTIVE_PROFILE["eval_interval"]
 EVAL_ROUNDS = ACTIVE_PROFILE["eval_rounds"]
 
-lr_step_size = 200000   # 每100集衰减一次（100×200步×10设备）
-lr_gamma = 0.9        # 学习率乘的系数
 
 # 训练稳定性分析参数：
 # 下面这组参数不改变论文里的 MDP 定义，也不改变状态/动作/奖励本身，
@@ -77,7 +75,7 @@ REWARD_SMOOTH_WINDOW = 5
 
 # 场景基础参数：
 # 这里对应论文中的 N 个地面 ES、S 颗卫星、M 个移动设备。
-N = 1
+N = 2
 S = 3
 M = 10
 
@@ -90,7 +88,7 @@ w_e = 0.25
 w_v = 0.10
 
 # 资源配置：
-F_BS = [10e9]
+F_BS = [8e9, 8e9]
 F_MD = 0.7e9
 F_MD_MIN = 0.4
 F_MD_MAX = 1.0
@@ -100,6 +98,17 @@ SAT_F_MAX = 2.0e9
 BS_F_MIN = 1.0e9
 BS_F_MAX = 2.5e9
 
+# 两星任务分片参数：
+# 第一版只允许任务同时分给两颗卫星，避免任意多星组合导致动作空间爆炸。
+# SPLIT_MIN_RATIO 防止出现 1%/99% 这类几乎等同于单星卸载的伪分片。
+ENABLE_TWO_SAT_SPLIT = 1
+MAX_SPLIT_SATS = 2
+CONT_ACTION_DIM = 3
+SPLIT_MIN_RATIO = 0.15
+SPLIT_MERGE_DELAY = 0.02
+SPLIT_EXTRA_ENERGY = 0.02
+SPLIT_OVERHEAD_PENALTY = -0.02
+
 # 当前模式对应的训练规模。
 steps = ACTIVE_PROFILE["steps"]
 zeta = 1
@@ -108,6 +117,8 @@ max_episode = ACTIVE_PROFILE["max_episode"]
 alpha = math.pi / 6
 SEED = ACTIVE_PROFILE["seed"]
 
+lr_step_size = 100*ACTIVE_PROFILE["steps"]*M   # 每100集衰减一次（100×200步×10设备）
+lr_gamma = 0.9        # 学习率乘的系数
 # 地图与移动模型：
 # 这里保留原代码的二维仿真区域，用于第一阶段 NTN 简化实验。
 MAP_WIDTH = 1600
@@ -159,7 +170,7 @@ ENABLE_GROUND_CONGESTION = 1
 SAT_HEIGHT = 550e3
 SAT_MIN_ELEVATION_DEG = 5.0
 SAT_BW = 6e7
-SAT_NOISE = 1e-13#3.1622776601683796e-14
+SAT_NOISE = 1e-13
 SAT_GAIN = 1e5
 MD_GAIN = 3.162
 ATM_LOSS_LINEAR = 1.4125
