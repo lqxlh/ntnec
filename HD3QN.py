@@ -107,6 +107,8 @@ class HD3QN(nn.Module):
         )
         self.td_target_clip = 20.0
         self.cont_loss_weight = 0.04
+        # 分片比例边界惩罚只约束 split 动作的连续第 0 维，避免比例输出长期贴在 0 或 1。
+        self.split_ratio_boundary_weight = float(getattr(para, "SPLIT_RATIO_BOUNDARY_WEIGHT", 0.0))
 
     def predict_q(self, obs: torch.Tensor):
         self.model.eval()
@@ -193,9 +195,20 @@ class HD3QN(nn.Module):
         cont_pred_c = self.model.cont_fc(feat_c).view(obs.shape[0], self.act_dim, self.model.cont_dim)
         q_for_cont = self.model._compute_q(feat_c, cont_pred_c)
         cont_loss = -q_for_cont.gather(1, disc_action_long.unsqueeze(1)).squeeze(1).mean()
+        # 只在两星分片样本上加很轻的边界惩罚，让 raw ratio 不要塌缩到 0/1 输出边界。
+        ratio_boundary_loss = torch.zeros((), dtype=cont_loss.dtype, device=cont_loss.device)
+        split_action_start = int(para.N + para.S + 1)
+        split_mask = disc_action_long >= split_action_start
+        if self.split_ratio_boundary_weight > 0 and split_mask.any() and self.model.cont_dim > 0:
+            selected_cont = cont_pred_c.gather(
+                1,
+                disc_action_long.view(-1, 1, 1).expand(-1, 1, self.model.cont_dim),
+            ).squeeze(1)
+            ratio_raw = selected_cont[split_mask, 0].clamp(1e-4, 1.0 - 1e-4)
+            ratio_boundary_loss = -(torch.log(ratio_raw) + torch.log(1.0 - ratio_raw)).mean()
         self._set_q_head_requires_grad(True)
 
-        total_loss = q_loss + self.cont_loss_weight * cont_loss
+        total_loss = q_loss + self.cont_loss_weight * cont_loss + self.split_ratio_boundary_weight * ratio_boundary_loss
         self.optimizer.zero_grad()
         total_loss.backward()
         nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10.0)
@@ -280,6 +293,13 @@ class Agent:
         if explore:
             noise_scale = 0.15 * self.e_greed
             noise = np.random.normal(0, noise_scale, size=val.shape)
+            # 分片动作的第 0 维是任务比例，单独给更稳定的探索强度，避免一开始贴住最小比例。
+            split_action_start = int(para.N + para.S + 1)
+            if discrete_action >= split_action_start and val.shape[0] > 0:
+                ratio_noise_scale = max(float(para.SPLIT_RATIO_NOISE_FLOOR), noise_scale)
+                noise[0] = np.random.normal(0, ratio_noise_scale)
+                if np.random.rand() < float(para.SPLIT_RATIO_EXPLORE_PROB) * max(self.e_greed, 0.1):
+                    val[0] = np.random.uniform(0.1, 0.9)
             val = np.clip(val + noise, 0.0, 1.0).astype(np.float32)
         return val
 

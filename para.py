@@ -108,6 +108,13 @@ SPLIT_MIN_RATIO = 0.15
 SPLIT_MERGE_DELAY = 0.02
 SPLIT_EXTRA_ENERGY = 0.02
 SPLIT_OVERHEAD_PENALTY = -0.01
+# 分片动作掩码用几个代表性比例做“存在可行解”判断，避免要求两颗卫星都能独立跑完整任务。
+SPLIT_FEASIBILITY_RATIOS = (0.25, 0.50, 0.75)
+# 分片比例探索只作用于连续动作第 0 维，防止比例长期卡在 SPLIT_MIN_RATIO 边界。
+SPLIT_RATIO_NOISE_FLOOR = 0.05
+SPLIT_RATIO_EXPLORE_PROB = 0.20
+# 轻量边界惩罚让分片比例远离 0/1 原始输出边界，但权重要小，避免强行固定到 0.5。
+SPLIT_RATIO_BOUNDARY_WEIGHT = 0.006
 
 # 当前模式对应的训练规模。
 steps = ACTIVE_PROFILE["steps"]
@@ -149,6 +156,9 @@ TASK_PRIORITY_MAX = 3
 REWARD_DELAY_NORM = TASK_GAMMA_MAX
 REWARD_ENERGY_NORM = 5.0
 REWARD_VALUE_NORM = TASK_PRIORITY_MAX
+# deadline 成功奖励和超时连续惩罚，用来把 reward 排名更直接地对齐“时延低、任务成功率高”。
+REWARD_SUCCESS_BONUS = 0.18
+REWARD_OVERRUN_WEIGHT = 0.60
 
 # 地面链路参数：
 # 这些值对应论文地面 MEC 基线部分的带宽、噪声、路径损耗和发射功率设定。

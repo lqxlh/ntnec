@@ -80,6 +80,8 @@ class EdgeEnv:
             "sat_timeout_actions": 0,
             "sat_delay_over_gamma_sum": 0.0,
             "sat_metric_steps": 0,
+            "deadline_bonus_sum": 0.0,
+            "deadline_overrun_penalty_sum": 0.0,
             "sat_visible_not_selected": 0,
             "sat_invalid_visibility": 0,
             "visible_sat_decisions": 0,
@@ -164,7 +166,8 @@ class EdgeEnv:
             mask[N + 1 + sat_idx] = self._is_satellite_action_feasible(md, sat, sat_idx, sat_list)
         for pair_idx, (sat_a, sat_b) in enumerate(self.split_sat_pairs):
             split_action_idx = self.split_action_start + pair_idx
-            mask[split_action_idx] = bool(mask[N + 1 + sat_a] and mask[N + 1 + sat_b])
+            # 分片只要求“两颗卫星各自承担一部分任务”可行，不再要求两颗卫星都能独立跑完整任务。
+            mask[split_action_idx] = self._is_split_action_feasible(md, sat_list, sat_a, sat_b)
         return mask
 
     def decode_frequency(self, action_idx, action_value):
@@ -411,7 +414,8 @@ class EdgeEnv:
         # 一旦在当前状态下为某个卫星动作抽到了 ISL 负载样本，
         # 后续无论是动作掩码判断还是实际执行该动作，都复用同一份样本，
         # 从而保证决策依据和执行环境是一致的。
-        cache_key = (md.id, sat_idx)
+        # ISL 传输时延包含任务 bit 数，分片子任务不能复用完整任务的缓存结果。
+        cache_key = (md.id, sat_idx, int(md.B))
         if cache_key not in self._satellite_link_cache:
             t_isl, access_sat_idx, t_isl_prop = self._sample_sat_isl_delay(md, sat_list, sat_idx)
             self._satellite_link_cache[cache_key] = {
@@ -420,6 +424,48 @@ class EdgeEnv:
                 "T_isl_prop_s": t_isl_prop,
             }
         return dict(self._satellite_link_cache[cache_key])
+
+    def _estimate_satellite_part(self, md, sat, sat_idx, sat_list, task_bits, actual_freq):
+        # 只用于动作掩码的乐观估算，不扣减卫星资源，也不改写任务本体。
+        original_b = md.B
+        try:
+            md.B = max(int(task_bits), 1)
+            t_isl = self._get_satellite_link_sample(md, sat_list, sat_idx)["T_isl_s"]
+            t_comp, _ = sat.computing(md.B, md.C, actual_freq)
+            _, power_result = self._calc_sat_power(md, sat, t_comp, t_isl)
+            if power_result["remaining_budget_sat"] <= 0 or power_result["satellite_infeasible"]:
+                return False, float("inf")
+            t_tran, _ = md.sat_offloading(
+                md.B,
+                power_result["selected_power"],
+                power_result["channel_info"]["g_sat_raw"],
+                doppler_loss=power_result["channel_info"]["doppler_loss"],
+            )
+            total_delay = power_result["T_prop_s"] + t_isl + t_tran + t_comp
+            return total_delay <= md.Gamma, total_delay
+        finally:
+            # 掩码阶段不能污染真实任务大小，否则后续执行和日志都会偏掉。
+            md.B = original_b
+
+    def _is_split_action_feasible(self, md, sat_list, sat_a_idx, sat_b_idx):
+        # 分片动作判断“是否存在一个比例，让两颗卫星合起来满足 deadline”。
+        sat_a = sat_list[sat_a_idx]
+        sat_b = sat_list[sat_b_idx]
+        if not md.is_sat_visible(sat_a) or not md.is_sat_visible(sat_b):
+            return False
+        if sat_a.res_F < para.SAT_F_MIN or sat_b.res_F < para.SAT_F_MIN:
+            return False
+
+        freq_a = min(float(sat_a.res_F), float(para.SAT_F_MAX))
+        freq_b = min(float(sat_b.res_F), float(para.SAT_F_MAX))
+        for split_ratio in para.SPLIT_FEASIBILITY_RATIOS:
+            part_a_bits = max(int(md.B * split_ratio), 1)
+            part_b_bits = max(int(md.B) - part_a_bits, 1)
+            ok_a, delay_a = self._estimate_satellite_part(md, sat_a, sat_a_idx, sat_list, part_a_bits, freq_a)
+            ok_b, delay_b = self._estimate_satellite_part(md, sat_b, sat_b_idx, sat_list, part_b_bits, freq_b)
+            if ok_a and ok_b and max(delay_a, delay_b) + para.SPLIT_MERGE_DELAY <= md.Gamma:
+                return True
+        return False
 
     def _is_satellite_action_feasible(self, md, sat, sat_idx, sat_list):
         # 这里把新版论文的卫星卸载可行条件直接做成动作掩码：
@@ -466,6 +512,7 @@ class EdgeEnv:
             power_excess_ratio = float(np.clip(raw_power_excess_ratio, 0.0, 100.0))
             self.last_debug["mask_sat_power_excess_ratio_sum"] += power_excess_ratio
             self.last_debug["mask_sat_power_excess_ratio_count"] += 1
+            return False
 
         # 问题 1 的关键修复：卫星动作进入 DQN 候选集之前，也要估算最终总时延是否满足 deadline。
         # 这里使用 candidate_freq 做乐观估算；如果乐观情况下仍然超过 Gamma，就说明该卫星动作不适合作为候选动作。
@@ -479,6 +526,7 @@ class EdgeEnv:
         if total_delay_candidate > md.Gamma:
             self.last_debug["mask_sat_remaining_budget_fail_sum"] += md.Gamma - total_delay_candidate
             self.last_debug["mask_sat_remaining_budget_fail_count"] += 1
+            return False
 
         # 只有通过以上所有约束，这个卫星动作才真正进入 D3QN 的候选集合。
         self.last_debug["mask_sat_feasible"] += 1
@@ -503,6 +551,8 @@ class EdgeEnv:
         penalty_propagation,
         penalty_zero_alloc,
         sat_load_penalty,
+        deadline_violated,
+        deadline_overrun_ratio,
     ):
         # 这里把奖励函数恢复成论文大纲里的形式：
         # 1. 代价函数主干为 phi = w_D * T + w_E * E - w_V * V；
@@ -517,6 +567,9 @@ class EdgeEnv:
         energy_cost = w_e * energy_norm
         task_value = w_v * value_norm
         phi_cost = delay_cost + energy_cost - task_value
+        # 成功 bonus 让“满足 deadline”在 reward 上有明确正反馈；超时按超出比例连续惩罚。
+        deadline_bonus = 0.0 if deadline_violated else para.REWARD_SUCCESS_BONUS
+        deadline_overrun_penalty = -para.REWARD_OVERRUN_WEIGHT * deadline_overrun_ratio
         # 这里恢复成论文大纲里的主奖励结构：
         # reward = -phi + r_time + r_fre + r_vis + r_prop
         # 同时保留你后续加入的零分配惩罚和卫星负载软惩罚，
@@ -529,8 +582,10 @@ class EdgeEnv:
             + penalty_propagation
             + penalty_zero_alloc
             + sat_load_penalty
+            + deadline_bonus
+            + deadline_overrun_penalty
         )
-        return reward_val, phi_cost, delay_cost, energy_cost, task_value
+        return reward_val, phi_cost, delay_cost, energy_cost, task_value, deadline_bonus, deadline_overrun_penalty
 
     def _empty_transition_metrics(self):
         return {
@@ -923,11 +978,12 @@ class EdgeEnv:
             # 它不保证一定满足 Gamma，只表示该离散动作不是一个物理不可行的坏动作。
             self.last_debug["sat_exec_success_actions"] += 1
 
+        deadline_overrun_ratio = max((total_delay - md.Gamma) / max(float(md.Gamma), 1e-9), 0.0)
         delay_norm = total_delay / max(float(para.REWARD_DELAY_NORM), 1e-9)
         energy_norm = total_energy / max(float(para.REWARD_ENERGY_NORM), 1e-9)
         value_norm = priority / max(float(para.REWARD_VALUE_NORM), 1e-9)
 
-        reward, phi_cost, delay_cost, energy_cost, task_value = self._build_paper_reward(
+        reward, phi_cost, delay_cost, energy_cost, task_value, deadline_bonus, deadline_overrun_penalty = self._build_paper_reward(
             priority=priority,
             total_delay=total_delay,
             total_energy=total_energy,
@@ -937,6 +993,8 @@ class EdgeEnv:
             penalty_propagation=penalty_propagation,
             penalty_zero_alloc=penalty_zero_alloc,
             sat_load_penalty=sat_load_penalty,
+            deadline_violated=deadline_violated,
+            deadline_overrun_ratio=deadline_overrun_ratio,
         )
 
         md.B, md.C, md.Gamma, md.Priority = self.task()
@@ -1007,6 +1065,8 @@ class EdgeEnv:
         self.last_debug["penalty_visibility_sum"] += penalty_visibility
         self.last_debug["penalty_propagation_sum"] += penalty_propagation
         self.last_debug["penalty_zero_alloc_sum"] += penalty_zero_alloc
+        self.last_debug["deadline_bonus_sum"] += deadline_bonus
+        self.last_debug["deadline_overrun_penalty_sum"] += deadline_overrun_penalty
         # 在 reward 计算完成的最后
         reward = max(reward, -8.0)  # 单步 reward 下限截断到 -5
         self.last_debug["reward_sum"] += reward
