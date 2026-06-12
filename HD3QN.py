@@ -19,6 +19,24 @@ import para
 
 device = torch.device("cuda" if para.USE_CUDA and torch.cuda.is_available() else "cpu")
 
+class DualScheduler:
+    """双学习率调度器代理类，用于同步衰减两个优化器的学习率。"""
+    def __init__(self, q_scheduler, cont_scheduler):
+        self.q_scheduler = q_scheduler
+        self.cont_scheduler = cont_scheduler
+
+    def step(self, *args, **kwargs):
+        # 同步驱动两路优化器的衰减
+        self.q_scheduler.step(*args, **kwargs)
+        self.cont_scheduler.step(*args, **kwargs)
+
+    def get_last_lr(self):
+        # 返回当前各自的学习率列表，适配日志打印
+        return [self.q_scheduler.get_last_lr()[0], self.cont_scheduler.get_last_lr()[0]]
+
+    def __getattr__(self, name):
+        # 默认将其他未定义的属性调用重定向到 q_scheduler 上
+        return getattr(self.q_scheduler, name)
 
 class HD3QNModel(nn.Module):
     """共享状态编码 + 连续参数分支 + Dueling Q 分支。"""
@@ -99,16 +117,39 @@ class HD3QN(nn.Module):
         self.target_model = copy.deepcopy(model).to(device)
         self.act_dim = act_dim
         self.gamma = gamma
-        self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
-        self.scheduler = torch.optim.lr_scheduler.StepLR(
-            self.optimizer,
+        # 1. 拆分双优化器
+        # Q 网络使用外部传入的离散 Q 学习率 lr（即 para.LEARNING_RATE）
+        self.q_optimizer = optim.Adam(
+            list(self.model.shared.parameters()) +
+            list(self.model.adv_fc.parameters()) +
+            list(self.model.val_fc.parameters()),
+            lr=lr
+        )
+        # 连续网络使用 para.CONT_LEARNING_RATE
+        self.cont_optimizer = optim.Adam(
+            self.model.cont_fc.parameters(),
+            lr=float(getattr(para, "CONT_LEARNING_RATE", 3e-4))
+        )
+        # 2. 为两个优化器分别创建 StepLR（同步使用 para.py 的 lr_step_size 和 lr_gamma）
+        q_scheduler = torch.optim.lr_scheduler.StepLR(
+            self.q_optimizer,
             step_size=para.lr_step_size,
             gamma=para.lr_gamma,
         )
+        cont_scheduler = torch.optim.lr_scheduler.StepLR(
+            self.cont_optimizer,
+            step_size=para.lr_step_size,
+            gamma=para.lr_gamma,
+        )
+        # 3. 将其封装进 DualScheduler 统一暴露给外部
+        self.scheduler = DualScheduler(q_scheduler, cont_scheduler)
         self.td_target_clip = 20.0
-        self.cont_loss_weight = 0.04
+
+        self.cont_loss_weight = 0.1
         # 分片比例边界惩罚只约束 split 动作的连续第 0 维，避免比例输出长期贴在 0 或 1。
         self.split_ratio_boundary_weight = float(getattr(para, "SPLIT_RATIO_BOUNDARY_WEIGHT", 0.0))
+        # 新增：从 para.py 读取软更新参数 tau
+        self.tau =float(getattr(para, "TAU", 0.005))
 
     def predict_q(self, obs: torch.Tensor):
         self.model.eval()
@@ -208,23 +249,50 @@ class HD3QN(nn.Module):
             ratio_boundary_loss = -(torch.log(ratio_raw) + torch.log(1.0 - ratio_raw)).mean()
         self._set_q_head_requires_grad(True)
 
-        total_loss = q_loss + self.cont_loss_weight * cont_loss + self.split_ratio_boundary_weight * ratio_boundary_loss
-        self.optimizer.zero_grad()
-        total_loss.backward()
-        nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10.0)
-        self.optimizer.step()
+        # --- 1. 独立更新离散评估网络 (Q-critic) ---
+        self.q_optimizer.zero_grad()
+        q_loss.backward()
+        q_params = (
+            list(self.model.shared.parameters()) +
+            list(self.model.adv_fc.parameters()) +
+            list(self.model.val_fc.parameters())
+        )
+        nn.utils.clip_grad_norm_(q_params, max_norm=10.0)
+        self.q_optimizer.step()
+
+        # --- 2. 独立更新连续控制分支 (Actor) ---
+        self.cont_optimizer.zero_grad()
+        cont_total_loss = (
+            self.cont_loss_weight * cont_loss +
+            self.split_ratio_boundary_weight * ratio_boundary_loss
+        )
+        cont_total_loss.backward()
+        nn.utils.clip_grad_norm_(self.model.cont_fc.parameters(), max_norm=10.0)
+        self.cont_optimizer.step()
+
+        # 保证对外接口返回值一致，合成 total_loss 并返回
+        total_loss = q_loss + cont_total_loss
 
         return total_loss, q_loss, cont_loss, td_errors
 
     def sync_target(self):
         self.target_model.load_state_dict(self.model.state_dict())
 
+    def soft_update(self):
+        """目标网络软更新（Polyak 均值跟踪）。"""
+        with torch.no_grad():
+            for target_param, param in zip(self.target_model.parameters(), self.model.parameters()):
+                target_param.data.copy_(
+                    self.tau * param.data + (1.0 - self.tau) * target_param.data
+                )
+
     def save_model(self, path: str):
         torch.save(
             {
                 "model_state_dict": self.model.state_dict(),
                 "target_model_state_dict": self.target_model.state_dict(),
-                "optimizer_state_dict": self.optimizer.state_dict(),
+                "q_optimizer_state_dict": self.q_optimizer.state_dict(),
+                "cont_optimizer_state_dict": self.cont_optimizer.state_dict(),
             },
             path,
         )
@@ -233,7 +301,11 @@ class HD3QN(nn.Module):
         ckpt = torch.load(path, map_location=device)
         self.model.load_state_dict(ckpt["model_state_dict"])
         self.target_model.load_state_dict(ckpt["target_model_state_dict"])
-        self.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        # 做向后兼容的检查
+        if "q_optimizer_state_dict" in ckpt:
+            self.q_optimizer.load_state_dict(ckpt["q_optimizer_state_dict"])
+        if "cont_optimizer_state_dict" in ckpt:
+            self.cont_optimizer.load_state_dict(ckpt["cont_optimizer_state_dict"])
         self.model.eval()
         self.target_model.eval()
 
@@ -255,7 +327,7 @@ class Agent:
         self.e_greed = e_greed
         self.e_greed_decrement = e_greed_decrement
         self.global_step = 0
-        self.update_target_steps = 300
+        self.update_target_steps = 1
 
     def _to_tensor(self, obs):
         return torch.tensor(obs, dtype=torch.float32).unsqueeze(0).to(device)
@@ -338,9 +410,8 @@ class Agent:
             next_action_mask=next_mask_t,
             is_weights=is_weights,
         )
-
-        if self.global_step % self.update_target_steps == 0:
-            self.alg.sync_target()
+        #软更新
+        self.alg.soft_update()
 
         return total_loss.item(), q_loss.item(), cont_loss.item(), td_errors
 

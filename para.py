@@ -56,7 +56,10 @@ MEMORY_WARMUP_SIZE = ACTIVE_PROFILE["memory_warmup_size"]
 SAC_MEMORY_WARMUP_SIZE = ACTIVE_PROFILE["sac_memory_warmup_size"]
 BATCH_SIZE = ACTIVE_PROFILE["batch_size"]
 SAC_BATCH_SIZE = ACTIVE_PROFILE["sac_batch_size"]
+#离散的学习率
 LEARNING_RATE = 1e-4
+#连续的学习率
+CONT_LEARNING_RATE = 3e-4
 ACTOR_LR = 3e-4
 CRITIC_LR = 3e-4
 DQN_GAMMA = 0.99
