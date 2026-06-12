@@ -228,11 +228,13 @@ class EdgeEnv:
         return np.array(self.state)
 
     def reset_state(self, md_list, bs_list, sat_list):
-        # 每个时隙结束后只恢复边缘节点剩余算力，不重置位置。
+        # 每个时隙结束后恢复边缘节点剩余算力，并统一推进卫星到下一个时隙。
         for bs_idx, bs in enumerate(bs_list):
             bs.res_F = F_BS[bs_idx]
         for sat_idx, sat in enumerate(sat_list):
             sat.res_F = SAT_F[sat_idx]
+            # 卫星位置按时隙同步更新，保证同一时隙内所有 MD 共享同一个 NTN 几何状态。
+            sat.move()
         # 这里对应论文中的“进入下一个决策时隙”：
         # 卫星总算力恢复为下一时隙的初始可分配资源，因此时隙级累计负载也要同步清零。
         self._slot_sat_usage = [0.0 for _ in range(S)]
@@ -940,8 +942,8 @@ class EdgeEnv:
         md.B, md.C, md.Gamma, md.Priority = self.task()
         md.move()
         md.connect_BS = md.connect_choice()
-        for sat in sat_list:
-            sat.move()
+        # 卫星不在单个 MD 决策后移动，避免同一时隙内不同 MD 看到不同卫星位置。
+        # 统一的卫星移动放在 reset_state() 中，由外层训练循环在一个时隙结束后调用。
         self._refresh_full_state(md_list, bs_list, sat_list)
 
         if b == 0:

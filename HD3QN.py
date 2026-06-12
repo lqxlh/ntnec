@@ -79,7 +79,8 @@ class HD3QNModel(nn.Module):
         q_input = q_input.reshape(batch_size * self.act_dim, -1)
         adv = self.adv_fc(q_input).view(batch_size, self.act_dim)
         val = self.val_fc(feat)
-        return val + adv
+        # Dueling 聚合公式：减去优势均值，避免 V(s) 和 A(s,a) 互相吸收同一部分 Q 值。
+        return val + adv - adv.mean(dim=1, keepdim=True)
 
     def forward(self, obs):
         """返回 Q 值和连续动作参数。"""
@@ -104,7 +105,6 @@ class HD3QN(nn.Module):
             step_size=para.lr_step_size,
             gamma=para.lr_gamma,
         )
-        self.reward_clip = 8.0
         self.td_target_clip = 20.0
         self.cont_loss_weight = 0.04
 
@@ -154,12 +154,11 @@ class HD3QN(nn.Module):
 
         # 阶段 1：Q-loss。这里使用 replay 中真实执行过的连续动作。
         feat_q = self.model.shared(obs)
-        cont_for_q = torch.full(
-            (obs.shape[0], self.act_dim, self.model.cont_dim),
-            0.5,
-            dtype=obs.dtype,
-            device=obs.device,
-        )
+        with torch.no_grad():
+            # 未执行动作没有 replay 里的真实连续参数，用当前连续分支的预测值填充更贴近网络实际输出。
+            cont_for_q = self.model.cont_fc(feat_q).view(obs.shape[0], self.act_dim, self.model.cont_dim)
+        # clone 后再写入真实执行动作，避免原张量被原地 scatter 修改导致调试时难以追踪。
+        cont_for_q = cont_for_q.clone()
         action_index = disc_action_long.view(-1, 1, 1).expand(-1, 1, self.model.cont_dim)
         cont_for_q.scatter_(1, action_index, cont_action.unsqueeze(1))
         q_pred_q = self.model._compute_q(feat_q, cont_for_q)
@@ -175,8 +174,8 @@ class HD3QN(nn.Module):
 
             next_q_target, _ = self.target_model(next_obs)
             next_q_val = next_q_target.gather(1, next_greedy_action.unsqueeze(1)).squeeze(1)
-            clipped_reward = reward.clamp(-self.reward_clip, self.reward_clip)
-            td_target = clipped_reward + (1.0 - terminal.float()) * self.gamma * next_q_val
+            # 环境里已经对单步 reward 做过下限保护，这里只保留 TD target 的整体数值保护。
+            td_target = reward + (1.0 - terminal.float()) * self.gamma * next_q_val
             td_target = td_target.clamp(-self.td_target_clip, self.td_target_clip)
 
         td_errors = torch.abs(q_selected - td_target).detach().cpu().numpy()
@@ -189,9 +188,10 @@ class HD3QN(nn.Module):
 
         # 阶段 2：cont-loss。连续分支通过提升当前动作 Q 值学习资源分配。
         self._set_q_head_requires_grad(False)
-        feat_c = self.model.shared(obs)
+        # 复用阶段 1 已经算出的 shared 特征；detach 后 cont-loss 不会更新 shared encoder。
+        feat_c = feat_q.detach()
         cont_pred_c = self.model.cont_fc(feat_c).view(obs.shape[0], self.act_dim, self.model.cont_dim)
-        q_for_cont = self.model._compute_q(feat_c.detach(), cont_pred_c)
+        q_for_cont = self.model._compute_q(feat_c, cont_pred_c)
         cont_loss = -q_for_cont.gather(1, disc_action_long.unsqueeze(1)).squeeze(1).mean()
         self._set_q_head_requires_grad(True)
 

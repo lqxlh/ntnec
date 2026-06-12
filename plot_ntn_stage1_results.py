@@ -30,7 +30,7 @@ def metric_get(metric_dict, metric_key, default_value=0.0):
     return float(metric_dict.get(metric_key, default_value))
 
 
-def smooth_curve(values, window_size=5):
+def smooth_curve(values, window_size=4):
     # 对曲线做简单滑动平均，让收敛趋势更清楚；窗口不足时使用已有前缀数据求均值。
     values = np.asarray(values, dtype=np.float64)
     if window_size <= 1 or len(values) == 0:

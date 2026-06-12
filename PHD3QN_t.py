@@ -316,8 +316,6 @@ def run_episode(env, rpm, agent, md_list, bs_list, sat_list):
 def evaluate(env, agent, agent2, md_list, bs_list, sat_list, eval_rounds=2):
     eval_rewards = []
     eval_debug_list = []
-
-    # Q ???????????? BS?? SAT?????????????????
     q_diag = {
         "q_local_sum": 0.0, "q_bs_sum": 0.0, "q_sat_sum": 0.0, "q_split_sum": 0.0,
         "q_local_count": 0, "q_bs_count": 0, "q_sat_count": 0, "q_split_count": 0,
@@ -703,6 +701,6 @@ if __name__ == "__main__":
     print(
         f"Run mode: {para.RUN_MODE} | device: {current_device} | "
         f"cpu_threads: {para.CPU_THREADS} | episodes: {para.max_episode} | "
-        f"steps: {para.steps} | seeds: {para.SEED} | algorithm: HD3QN"
+        f"steps: {para.steps} | seeds: {para.SEED} | algorithm: PHD3QN"
     )
     run_training_experiment(result_prefix=experiment_config.MAIN_SIM_PREFIX)

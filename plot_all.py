@@ -30,7 +30,7 @@ def metric_get(metric_dict, metric_key, default_value=0.0):
     return float(metric_dict.get(metric_key, default_value))
 
 
-def smooth_curve(values, window_size=5):
+def smooth_curve(values, window_size=4):
     # 对曲线做简单滑动平均，让收敛趋势更清楚；窗口不足时使用已有前缀数据求均值。
     values = np.asarray(values, dtype=np.float64)
     if window_size <= 1 or len(values) == 0:
@@ -167,9 +167,34 @@ def draw_baseline_convergence_comparison(plt, result_dir, result_prefix, output_
 
     # 定义需要对比的算法前缀和对应 label
     comparison_targets = [
-        ("Proposed PHD3QN", result_prefix, "#1f77b4"),
-        ("DQN + Heuristic (BL6)", "baselines_dqn_heuristic", "#ff7f0e"),
-        ("Greedy-Delay (BL5)", "baselines_greedy_delay", "#d62728")
+
+        ("PHD3QN",
+         result_prefix,
+         "#1f77b4"),
+
+        ("BL1 Local",
+         "baselines_local_only",
+         "#ff7f0e"),
+
+        ("BL2 NoSat",
+         "baselines_no_satellite",
+         "#2ca02c"),
+
+        ("BL3 NoBS",
+         "baselines_no_gnb",
+         "#d62728"),
+
+        ("BL4 Random",
+         "baselines_random_equal",
+         "#9467bd"),
+
+        ("BL5 Greedy",
+         "baselines_greedy_delay",
+         "#8c564b"),
+
+        ("BL6 DQN",
+         "baselines_dqn_heuristic",
+         "#e377c2")
     ]
 
     has_data = False
@@ -203,87 +228,194 @@ def draw_baseline_convergence_comparison(plt, result_dir, result_prefix, output_
 # ═════════════════════════════════════════════════════════════════════════════
 # 新增功能二：物理性能直方图 (Bar Charts of QoS)
 # ═════════════════════════════════════════════════════════════════════════════
-def draw_qos_bar_charts(plt, result_dir, result_prefix, output_path, steady_episodes=50):
-    """读取所有已生成的基线实验，计算最后 steady_episodes 轮的均值，绘制 2x2 QoS 直方图。"""
+def draw_qos_bar_charts(plt,
+                        result_dir,
+                        result_prefix,
+                        output_path,
+                        steady_episodes=50):
+    """
+    7种算法性能对比柱状图
 
-    # 完整算法字典，若未来有新基线，会自动在此检索
+    Reward
+    Delay
+    Energy
+    Success Rate
+    """
+
     algo_dict = {
-        "Proposed\nPHD3QN": result_prefix,
-        "Local-Only\n(BL1)": "baselines_local_only",
-        "No-Sat\n(BL2)": "baselines_no_satellite",
-        "No-gNB\n(BL3)": "baselines_no_gnb",
-        "Random+Equal\n(BL4)": "baselines_random_equal",
-        "Greedy-Delay\n(BL5)": "baselines_greedy_delay",
-        "DQN+Heuristic\n(BL6)": "baselines_dqn_heuristic"
+        "PHD3QN": result_prefix,
+        "BL1\nLocal": "baselines_local_only",
+        "BL2\nNoSat": "baselines_no_satellite",
+        "BL3\nNoBS": "baselines_no_gnb",
+        "BL4\nRandom": "baselines_random_equal",
+        "BL5\nGreedy": "baselines_greedy_delay",
+        "BL6\nDQN": "baselines_dqn_heuristic"
     }
 
-    # 提取已存在数据的算法物理指标
     active_algos = []
-    delays, energies, successes, resource_costs = [], [], [], []
 
-    for name, prefix in algo_dict.items():
+    rewards = []
+    delays = []
+    energies = []
+    successes = []
+
+    for algo_name, prefix in algo_dict.items():
+
         try:
-            histories = load_metric_histories(result_dir, prefix, "eval")
-            # 提取最后 steady_episodes 轮的评价指标
-            avg_delay = build_curve(histories, "avg_total_delay")[-steady_episodes:].mean()
-            avg_energy = build_curve(histories, "avg_total_energy", 0.0)[-steady_episodes:].mean()
-            # 成功率用 1.0 + avg_penalty_time 计算
-            avg_penalty_time = build_curve(histories, "avg_penalty_time", 0.0)[-steady_episodes:].mean()
-            avg_success = np.clip(1.0 + avg_penalty_time, 0.0, 1.0)
-            # 资源超载代价：提取绝对值的 penalty_resource
-            avg_penalty_resource = build_curve(histories, "avg_penalty_resource", 0.0)[-steady_episodes:].mean()
-            avg_res_cost = abs(avg_penalty_resource)
+            histories = load_metric_histories(
+                result_dir,
+                prefix,
+                "eval"
+            )
 
-            active_algos.append(name)
-            delays.append(avg_delay)
-            energies.append(avg_energy)
-            successes.append(avg_success * 100.0)  # 转为百分比百分制
-            resource_costs.append(avg_res_cost)
+            reward = build_curve(
+                histories,
+                "avg_reward",
+                0.0
+            )[-steady_episodes:].mean()
+
+            delay = build_curve(
+                histories,
+                "avg_total_delay",
+                0.0
+            )[-steady_episodes:].mean()
+
+            energy = build_curve(
+                histories,
+                "avg_total_energy",
+                0.0
+            )[-steady_episodes:].mean()
+
+            penalty_time = build_curve(
+                histories,
+                "avg_penalty_time",
+                0.0
+            )[-steady_episodes:].mean()
+
+            success = np.clip(
+                1.0 + penalty_time,
+                0.0,
+                1.0
+            )
+
+            active_algos.append(algo_name)
+
+            rewards.append(reward)
+            delays.append(delay)
+            energies.append(energy)
+            successes.append(success * 100)
+
         except FileNotFoundError:
+            print(f"{algo_name} 数据不存在，跳过")
             continue
 
-    if not active_algos:
-        print("  [提示] 未检测到任何已运行完的基线数据，跳过 QoS 直方图绘制。")
+    if len(active_algos) == 0:
+        print("没有可绘制的数据")
         return
 
-    # 绘制 2x2 直方图
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    fig.suptitle("Performance Comparison of QoS Metrics (Steady State)", fontsize=16)
+    colors = [
+        "#1f77b4",
+        "#ff7f0e",
+        "#2ca02c",
+        "#d62728",
+        "#9467bd",
+        "#8c564b",
+        "#e377c2"
+    ][:len(active_algos)]
 
-    # 美观配色
-    colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2"]
-    colors = colors[:len(active_algos)]
+    fig, axes = plt.subplots(
+        2,
+        2,
+        figsize=(15, 10)
+    )
 
-    metrics_data = [
-        ("Average Total Delay (s)", delays, "Delay (s)", axes[0, 0], ".3f"),
-        ("Average Total Energy (J)", energies, "Energy (J)", axes[0, 1], ".3f"),
-        ("Task Success Rate (%)", successes, "Success Rate (%)", axes[1, 0], ".1f"),
-        ("Resource Overload Penalty", resource_costs, "Overload Cost", axes[1, 1], ".3f")
+    fig.suptitle(
+        "Performance Comparison of Algorithms",
+        fontsize=16
+    )
+
+    metric_info = [
+
+        (
+            "Average Reward",
+            rewards,
+            axes[0, 0],
+            ".2f"
+        ),
+
+        (
+            "Average Delay (s)",
+            delays,
+            axes[0, 1],
+            ".3f"
+        ),
+
+        (
+            "Average Energy (J)",
+            energies,
+            axes[1, 0],
+            ".3f"
+        ),
+
+        (
+            "Task Success Rate (%)",
+            successes,
+            axes[1, 1],
+            ".1f"
+        )
     ]
 
-    for title, data, ylabel, ax, fmt in metrics_data:
-        bars = ax.bar(active_algos, data, color=colors, edgecolor="black", alpha=0.85, width=0.55)
-        ax.set_title(title, fontsize=12, fontweight="bold")
-        ax.set_ylabel(ylabel)
-        ax.grid(axis="y", linestyle="--", alpha=0.5)
+    for title, values, ax, fmt in metric_info:
 
-        # 在柱子上方标注数值
+        bars = ax.bar(
+            active_algos,
+            values,
+            color=colors,
+            edgecolor="black",
+            alpha=0.85
+        )
+
+        ax.set_title(title)
+
+        ax.grid(
+            axis="y",
+            linestyle="--",
+            alpha=0.4
+        )
+
         for bar in bars:
-            height = bar.get_height()
-            ax.annotate(f"{height:{fmt}}",
-                        xy=(bar.get_x() + bar.get_width() / 2, height),
-                        xytext=(0, 3),  # 向上偏移 3 个像素
-                        textcoords="offset points",
-                        ha="center", va="bottom", fontsize=9, fontweight="semibold")
 
-        # 防止标签重叠
-        plt.setp(ax.get_xticklabels(), rotation=15, ha="right", fontsize=9)
+            height = bar.get_height()
+
+            ax.annotate(
+                format(height, fmt),
+                xy=(
+                    bar.get_x() + bar.get_width()/2,
+                    height
+                ),
+                xytext=(0, 3),
+                textcoords="offset points",
+                ha="center",
+                fontsize=8
+            )
+
+        plt.setp(
+            ax.get_xticklabels(),
+            rotation=15,
+            ha="right"
+        )
 
     plt.tight_layout()
-    plt.savefig(output_path, dpi=220, bbox_inches="tight")
-    plt.close(fig)
-    print(f"QoS 性能直方图已保存到: {output_path}")
 
+    plt.savefig(
+        output_path,
+        dpi=300,
+        bbox_inches="tight"
+    )
+
+    plt.close(fig)
+
+    print(f"QoS柱状图已保存: {output_path}")
 
 def main():
     try:

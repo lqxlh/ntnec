@@ -32,7 +32,7 @@ RUN_PROFILES = {
         "memory_warmup_size": 2000,
         "sac_memory_warmup_size": 2000,
         "steps": 200,
-        "max_episode": 100,
+        "max_episode": 150,
         "seed": [1],
         "batch_size": 256,
         "sac_batch_size": 256,
@@ -94,7 +94,7 @@ F_MD_MIN = 0.4
 F_MD_MAX = 1.0
 SAT_F = [6e9, 6e9, 6e9]
 SAT_F_MIN = 1.2e9
-SAT_F_MAX = 2.0e9
+SAT_F_MAX = 1.8e9
 BS_F_MIN = 1.0e9
 BS_F_MAX = 2.5e9
 
@@ -107,7 +107,7 @@ CONT_ACTION_DIM = 3
 SPLIT_MIN_RATIO = 0.15
 SPLIT_MERGE_DELAY = 0.02
 SPLIT_EXTRA_ENERGY = 0.02
-SPLIT_OVERHEAD_PENALTY = -0.02
+SPLIT_OVERHEAD_PENALTY = -0.01
 
 # 当前模式对应的训练规模。
 steps = ACTIVE_PROFILE["steps"]
@@ -117,7 +117,8 @@ max_episode = ACTIVE_PROFILE["max_episode"]
 alpha = math.pi / 6
 SEED = ACTIVE_PROFILE["seed"]
 
-lr_step_size = 100*ACTIVE_PROFILE["steps"]*M   # 每100集衰减一次（100×200步×10设备）
+# StepLR 在主训练循环里每个 episode 调一次 scheduler.step()，所以这里也按 episode 数计数。
+lr_step_size = 100   # 每 100 个 episode 衰减一次学习率。
 lr_gamma = 0.9        # 学习率乘的系数
 # 地图与移动模型：
 # 这里保留原代码的二维仿真区域，用于第一阶段 NTN 简化实验。
@@ -195,10 +196,10 @@ SAT_PROJECTION_Y_MIN = -3.5e6
 SAT_PROJECTION_Y_MAX = 3.5e6
 
 # 卫星时间推进参数：
-# 1. SAT_DECISION_DT 表示一次设备级决策对应的物理时间推进；
-# 2. SAT_TRAJECTORY_STEPS 表示一个 episode 里预计算的卫星传播步数。
-SAT_DECISION_DT = 5.0 / M
-SAT_TRAJECTORY_STEPS = steps * M + 2
+# 1. SAT_DECISION_DT 表示一个时隙对应的物理时间推进；
+# 2. SAT_TRAJECTORY_STEPS 表示一个 episode 里预计算的时隙级卫星传播步数。
+SAT_DECISION_DT = 5.0
+SAT_TRAJECTORY_STEPS = steps + 2
 
 # SGP4 默认轨道参数：
 # 这里对应论文里的“550 km 级 LEO 卫星”。
@@ -292,7 +293,7 @@ SAT_LOAD_PENALTY_WEIGHT = 0.3
 # 优先级指数：控制高 TD-Error 样本被偏爱的程度
 # 0 = 退化为均匀采样，1 = 完全按 TD-Error 排序
 # 当前值 0.6 是 PER 论文推荐的平衡点
-PER_ALPHA = 0.4
+PER_ALPHA = 0.6
 
 # IS 权重初始值：训练中会从这里线性退火到 1.0
 # 偏小 → 早期允许有偏估计，梯度更新更猛；退火到 1.0 后恢复无偏
