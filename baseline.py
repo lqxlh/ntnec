@@ -5,12 +5,11 @@ run_baselines.py — NTN 系统六组基线对比实验
 维度一：物理拓扑消融实验（证明 LEO 卫星在 6G 中的必要性）
   BL1 · local_only      全本地计算：证明移动终端在密集任务下会毁灭性超时
   BL2 · no_satellite    纯地面 MEC：证明地面拥塞/边缘时系统性能剧烈下降
-  BL3 · no_gnb          纯卫星+本地：证明卫星空间时延对极敏感任务的局限性 删了这个
 
 维度二：算法对比实验（证明 HD3QN 的先进性）
   BL4 · random_equal    随机分流 + 算力平分：性能下限
   BL5 · greedy_delay    贪心时延最优：证明多目标联合优化的必要性
-  BL6 · dqn_heuristic   DDQN（无 Dueling）+ 启发式频率：证明混合动作联合学习的收敛优势 改成固定
+  BL6 · ddqn_fixed   DDQN（无 Dueling）+ 启发式频率：证明混合动作联合学习的收敛优势 改成固定
 
 使用方法：
   python baseline.py                  # 运行全部 6 个基线
@@ -115,10 +114,9 @@ class SimpleDDQNModel(torch.nn.Module):
 BL_PREFIX = {
     "bl1": "baselines_local_only",
     "bl2": "baselines_no_satellite",
-    "bl3": "baselines_no_gnb",
     "bl4": "baselines_random_equal",
     "bl5": "baselines_greedy_delay",
-    "bl6": "baselines_dqn_heuristic",
+    "bl6": "baselines_ddqn_fixed",
 }
 
 
@@ -259,7 +257,6 @@ def save_results(prefix: str, train_rewards: list, eval_rewards: list,
 # ═════════════════════════════════════════════════════════════════════════════
 
 def _estimate_optimistic_delay(md, action_idx: int, bs_list, sat_list) -> float:
-    """? BL5 ??????????????????"""
     B, C = md.B, md.C
 
     if action_idx == 0:
@@ -274,7 +271,6 @@ def _estimate_optimistic_delay(md, action_idx: int, bs_list, sat_list) -> float:
         return t_tran + t_comp
 
     if N + 1 <= action_idx <= N + S:
-        # ?? SAT ??????????????
         sat_idx = action_idx - (N + 1)
         sat = sat_list[sat_idx]
         if not md.is_sat_visible(sat):
@@ -285,7 +281,6 @@ def _estimate_optimistic_delay(md, action_idx: int, bs_list, sat_list) -> float:
         t_comp = B * C / para.SAT_F_MAX
         return t_prop + t_tran + t_comp
 
-    # ???????? 50/50 ?????????? split action ????????
     pair_idx = action_idx - SPLIT_ACTION_START
     if pair_idx < 0 or pair_idx >= len(SPLIT_SAT_PAIRS):
         return float("inf")
@@ -305,31 +300,20 @@ def _estimate_optimistic_delay(md, action_idx: int, bs_list, sat_list) -> float:
         delay_parts.append(t_prop + t_tran + t_comp)
     return max(delay_parts) + para.SPLIT_MERGE_DELAY
 
-
-def _heuristic_freq(md, action_idx: int) -> float:
-    """根据任务数据量 B 在 [B_MIN, B_MAX] 的相对位置线性插值分配频率。
-
-    返回 cont_action ∈ [0.0, 1.0]，由 env.decode_frequency() 映射到实际频率。
-
-    设计原理：
-      任务越大（B 接近 B_MAX） → 分配更高频率来赶 deadline；
-      任务越小（B 接近 B_MIN） → 分配较低频率节省能耗。
-    公式：cont = (B - B_MIN) / (B_MAX - B_MIN)
+def _fixed_freq(action_idx):
     """
-    b_ratio = (md.B - para.TASK_B_MIN) / max(para.TASK_B_MAX - para.TASK_B_MIN, 1)
-    freq_ratio = float(np.clip(b_ratio, 0.0, 1.0))
-    # 当前主环境的连续动作是固定 3 维。
-    # 普通动作只使用第 0 维；分片动作使用 [分片比例, 卫星A算力, 卫星B算力]。
-    cont = np.full(CONT_ACTION_DIM, freq_ratio, dtype=np.float32)
+    固定频率资源分配
+
+    所有动作统一采用50%频率，
+    不根据任务大小动态调整。
+    """
+
+    cont = np.full(CONT_ACTION_DIM, 0.5, dtype=np.float32)
+
     if action_idx >= SPLIT_ACTION_START:
         cont[0] = 0.5
-        if CONT_ACTION_DIM > 1:
-            cont[1] = freq_ratio
-        if CONT_ACTION_DIM > 2:
-            cont[2] = freq_ratio
+
     return cont
-
-
 # ═════════════════════════════════════════════════════════════════════════════
 # 四、无训练基线：BL1 / BL4 / BL5 的策略函数
 # ═════════════════════════════════════════════════════════════════════════════
@@ -768,7 +752,7 @@ def run_masked_hd3qn_experiment(baseline_name: str, topo_mask: np.ndarray):
 # 七、BL6 · DDQN（无 Dueling）+ 启发式频率（算法对比）
 # ═════════════════════════════════════════════════════════════════════════════
 
-def _run_dqn_heuristic_episode(env, rpm, agent_dqn, md_list, bs_list, sat_list):
+def _run_ddqn_fixed_episode(env, rpm, agent_dqn, md_list, bs_list, sat_list):
     """BL6 训练回合：DDQN 学习离散动作，频率用启发式公式计算。"""
     total_reward = 0.0
     env.reset(md_list, bs_list, sat_list)
@@ -785,7 +769,7 @@ def _run_dqn_heuristic_episode(env, rpm, agent_dqn, md_list, bs_list, sat_list):
             # ① 离散：ε-greedy D3QN
             disc = agent_dqn.sample(obs[md_idx], action_mask=mask)
             # ② 连续：启发式（根据任务大小比例分配频率，不学习）
-            cont = _heuristic_freq(md_list[md_idx], disc)
+            cont = _fixed_freq(disc)
 
             pre_obs = obs[md_idx].copy()
             obs, reward, done, _, _, _, _, _, _, _, _ = env.step(
@@ -827,7 +811,7 @@ def _run_dqn_heuristic_episode(env, rpm, agent_dqn, md_list, bs_list, sat_list):
     return total_reward, debug_info
 
 
-def _eval_dqn_heuristic(env, agent_dqn, md_list, bs_list, sat_list, eval_rounds=1):
+def _eval_ddqn_fixed(env, agent_dqn, md_list, bs_list, sat_list, eval_rounds=1):
     """BL6 评估：DDQN 贪心选动作，频率用启发式公式。"""
     rewards, debug_list = [], []
     for _ in range(eval_rounds):
@@ -845,7 +829,7 @@ def _eval_dqn_heuristic(env, agent_dqn, md_list, bs_list, sat_list, eval_rounds=
             for md_idx in range(M):
                 mask = env.get_action_mask(md_list[md_idx], sat_list)
                 disc = agent_dqn.predict(obs[md_idx], action_mask=mask)
-                cont = _heuristic_freq(md_list[md_idx], disc)
+                cont = _fixed_freq(disc)
                 obs, reward, _, _, _, _, _, _, _, _, _ = env.step(
                     md_idx, disc, cont, tcn, bs_list, md_list, sat_list
                 )
@@ -862,7 +846,7 @@ def _eval_dqn_heuristic(env, agent_dqn, md_list, bs_list, sat_list, eval_rounds=
     return float(np.mean(rewards)), merged
 
 
-def run_dqn_heuristic_experiment():
+def run_ddqn_fixed_experiment():
     """BL6 · DQN + Heuristic Frequency 完整训练实验。"""
     prefix = BL_PREFIX["bl6"]
     print(f"\n{'=' * 60}")
@@ -899,7 +883,7 @@ def run_dqn_heuristic_experiment():
         # Warmup
         print(f"  Warmup 中... (需要 {WARMUP_SIZE} 条经验)")
         while len(rpm) < WARMUP_SIZE:
-            _run_dqn_heuristic_episode(env, rpm, agent_dqn, md_list, bs_list, sat_list)
+            _run_ddqn_fixed_episode(env, rpm, agent_dqn, md_list, bs_list, sat_list)
         print(f"  Warmup 完成，buffer = {len(rpm)} 条")
 
         train_rewards, eval_rewards = [], []
@@ -911,7 +895,7 @@ def run_dqn_heuristic_experiment():
         last_eval_dbg = {}
 
         for episode in range(max_episode):
-            train_r, train_dbg = _run_dqn_heuristic_episode(
+            train_r, train_dbg = _run_ddqn_fixed_episode(
                 env, rpm, agent_dqn, md_list, bs_list, sat_list
             )
 
@@ -921,7 +905,7 @@ def run_dqn_heuristic_experiment():
                     or episode == max_episode - 1
             )
             if should_eval:
-                eval_r, eval_dbg = _eval_dqn_heuristic(
+                eval_r, eval_dbg = _eval_ddqn_fixed(
                     env, agent_dqn, md_list, bs_list, sat_list, EVAL_ROUNDS
                 )
                 eval_ran_only.append(eval_r)
@@ -981,22 +965,18 @@ ALL_BASELINES = {
     "bl2": lambda: run_masked_hd3qn_experiment(
         "bl2", topo_mask=TOPO_NO_SAT
     ),
-    "bl3": lambda: run_masked_hd3qn_experiment(
-        "bl3", topo_mask=TOPO_NO_GNB
-    ),
     "bl4": lambda: run_heuristic_experiment(
         "bl4", _policy_random_equal, topo_mask=TOPO_ALL
     ),
     "bl5": lambda: run_heuristic_experiment(
         "bl5", _policy_greedy_delay, topo_mask=TOPO_ALL
     ),
-    "bl6": lambda: run_dqn_heuristic_experiment(),
+    "bl6": lambda: run_ddqn_fixed_experiment(),
 }
 
 BL_DESCRIPTIONS = {
     "bl1": "Local-Only     — 全本地计算（拓扑消融）",
     "bl2": "No-Satellite   — 无卫星纯地面MEC（拓扑消融）",
-    "bl3": "No-gNB         — 无基站纯卫星+本地（拓扑消融）",
     "bl4": "Random+Equal   — 随机分流+算力平分（算法对比）",
     "bl5": "Greedy-Delay   — 贪心时延最优（算法对比）",
     "bl6": "DQN+Heuristic  — DDQN离散(无Dueling)+启发式频率（算法对比）",

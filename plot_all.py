@@ -193,7 +193,7 @@ def draw_baseline_convergence_comparison(plt, result_dir, result_prefix, output_
          "#8c564b"),
 
         ("BL6 DQN",
-         "baselines_dqn_heuristic",
+         "baselines_ddqn_fixed",
          "#e377c2")
     ]
 
@@ -249,7 +249,7 @@ def draw_qos_bar_charts(plt,
         "BL3\nNoBS": "baselines_no_gnb",
         "BL4\nRandom": "baselines_random_equal",
         "BL5\nGreedy": "baselines_greedy_delay",
-        "BL6\nDQN": "baselines_dqn_heuristic"
+        "BL6\nDQN": "baselines_ddqn_fixed"
     }
 
     active_algos = []
