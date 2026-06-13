@@ -560,13 +560,15 @@ class EdgeEnv:
         self.last_debug["mask_sat_feasible"] += 1
         return True
 
-    def _sample_ground_queue_delay(self, bs_idx):
+    def _sample_ground_queue_delay(self, bs_idx, bs):
         if not para.ENABLE_GROUND_CONGESTION:
             return 0.0
-        queue_delay = random.uniform(para.GROUND_QUEUE_DELAY_MIN, para.GROUND_QUEUE_DELAY_MAX)
-        if random.random() < para.GROUND_HOTSPOT_PROB:
-            queue_delay += para.GROUND_HOTSPOT_DELAY_EXTRA * (1.0 + 0.1 * bs_idx)
-        return queue_delay
+        load_ratio = 1.0 - (
+                float(bs.res_F) / max(float(F_BS[bs_idx]), 1e-9)
+        )
+
+        load_ratio = np.clip(load_ratio, 0.0, 1.0)
+        return para.GROUND_QUEUE_DELAY_MAX* (load_ratio ** 2)
 
     def _build_paper_reward(
         self,
@@ -686,13 +688,10 @@ class EdgeEnv:
             return metrics, penalty_resource, penalty_propagation, False
 
         if action_idx != md.connect_BS + 1:
-            pareto_value = np.random.pareto(1.5) + 1
-            metrics["T_switch_g"] = md.B / (
-                para.GROUND_HANDOVER_DELAY_SCALE * max(1e-3, 1 - min(pareto_value * 0.01, 0.9))
-            )
+            metrics["T_switch_g"] = para.GROUND_HANDOVER_DELAY
 
         metrics["T_comp_g"], metrics["E_comp_g"] = bs.computing(md.B, md.C, actual_freq)
-        metrics["T_queue_g"] = self._sample_ground_queue_delay(action_idx - 1)
+        metrics["T_queue_g"] = self._sample_ground_queue_delay(action_idx - 1,bs)
         gain_val, power_result = self._calc_ground_power(md, metrics["T_comp_g"] + metrics["T_switch_g"] + metrics["T_queue_g"])
         metrics["selected_power"] = power_result["selected_power"]
         metrics["unconstrained_power"] = power_result["unconstrained_power"]
