@@ -134,7 +134,7 @@ lr_gamma = 0.9        # 学习率乘的系数
 # 这里保留原代码的二维仿真区域，用于第一阶段 NTN 简化实验。
 MAP_WIDTH = 1600
 MAP_HEIGHT = 1200
-MAX_MD_SPEED = 10
+MAX_MD_SPEED = 5
 
 # 任务参数：
 # 这里直接对应论文任务向量 l_{m,t} = [B, C, Gamma, V]^T 的取值范围。
@@ -190,8 +190,6 @@ SAT_GAIN = 1e5
 MD_GAIN = 3.162
 ATM_LOSS_LINEAR = 1.4125
 SAT_ETA_D = 0.95
-# 近似确定性信道，K→∞时 Rician 退化为 AWGN 无衰落
-SAT_RICIAN_K = 100.0
 LIGHT_SPEED = 3e8
 SAT_CARRIER_FREQ = 26e9
 SAT_WAVELENGTH = LIGHT_SPEED / SAT_CARRIER_FREQ
@@ -305,18 +303,18 @@ SAT_LOAD_PENALTY_WEIGHT = 0.3
 # 优先级指数：控制高 TD-Error 样本被偏爱的程度
 # 0 = 退化为均匀采样，1 = 完全按 TD-Error 排序
 # 当前值 0.6 是 PER 论文推荐的平衡点
-PER_ALPHA = 0.6
+PER_ALPHA = 0.2
 
 # IS 权重初始值：训练中会从这里线性退火到 1.0
 # 偏小 → 早期允许有偏估计，梯度更新更猛；退火到 1.0 后恢复无偏
-PER_BETA_INIT = 0.6
+PER_BETA_INIT = 0.8
 
 # beta 退火增量（自动按当前模式的总学习步数反算）：
 # 目标：让 beta 恰好在训练结束时从 0.4 退火到 1.0
 # 总 sample() 次数 ≈ max_episode × steps × M ÷ LEARN_FREQ
 # formal: 400 × 200 × 10 ÷ 1 = 800,000 → increment = 0.6 / 800,000 ≈ 7.5e-7
 _per_total_sample_calls = max_episode * steps * M // LEARN_FREQ
-PER_BETA_INCREMENT = 0.4 / max(_per_total_sample_calls, 1)
+PER_BETA_INCREMENT = 0.2 / max(_per_total_sample_calls, 1)
 
 # 防止优先级为零的平滑常数，通常不需要改动
 PER_EPSILON = 0.01

@@ -129,10 +129,8 @@ class MD:
         wavelength = para.SAT_WAVELENGTH
         free_space_denominator = (4 * math.pi * distance_sat) ** 2
         free_space_gain = (para.SAT_GAIN * para.MD_GAIN * (wavelength ** 2)) / free_space_denominator
-        los_bias = para.SAT_RICIAN_K / (para.SAT_RICIAN_K + 1.0)
-        nlos_term = np.abs(np.random.randn() + 1j * np.random.randn()) ** 2 / 2.0
-        fading = los_bias + (1.0 - los_bias) * nlos_term
-        gain_val = max(free_space_gain * fading / para.ATM_LOSS_LINEAR, 1e-20)
+        fading = 1.0
+        gain_val = max(free_space_gain /para.ATM_LOSS_LINEAR,1e-20)
         relative_radial_velocity = self.sat_relative_radial_velocity(sat, distance_sat=distance_sat)
         doppler_shift = relative_radial_velocity * para.SAT_CARRIER_FREQ / para.LIGHT_SPEED
         doppler_loss = self.sat_doppler_loss_from_shift(doppler_shift)
