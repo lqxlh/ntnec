@@ -5,12 +5,12 @@ run_baselines.py — NTN 系统六组基线对比实验
 维度一：物理拓扑消融实验（证明 LEO 卫星在 6G 中的必要性）
   BL1 · local_only      全本地计算：证明移动终端在密集任务下会毁灭性超时
   BL2 · no_satellite    纯地面 MEC：证明地面拥塞/边缘时系统性能剧烈下降
-  BL3 · no_gnb          纯卫星+本地：证明卫星空间时延对极敏感任务的局限性
+  BL3 · no_gnb          纯卫星+本地：证明卫星空间时延对极敏感任务的局限性 删了这个
 
 维度二：算法对比实验（证明 HD3QN 的先进性）
   BL4 · random_equal    随机分流 + 算力平分：性能下限
   BL5 · greedy_delay    贪心时延最优：证明多目标联合优化的必要性
-  BL6 · dqn_heuristic   DDQN（无 Dueling）+ 启发式频率：证明混合动作联合学习的收敛优势
+  BL6 · dqn_heuristic   DDQN（无 Dueling）+ 启发式频率：证明混合动作联合学习的收敛优势 改成固定
 
 使用方法：
   python baseline.py                  # 运行全部 6 个基线
@@ -181,6 +181,8 @@ def summarize_debug(debug_info):
     sat_lpc = max(float(debug_info.get("sat_load_penalty_count", 0.0)), 1.0)
     sat_bfc = max(float(debug_info.get("mask_sat_remaining_budget_fail_count", 0.0)), 1.0)
     sat_pfc = max(float(debug_info.get("mask_sat_power_excess_ratio_count", 0.0)), 1.0)
+    # 执行阶段的超功率惩罚单独用一个分母，避免和 mask 阶段诊断计数混在一起。
+    sat_ppc = max(float(debug_info.get("sat_power_penalty_count", 0.0)), 1.0)
     vis_d = float(debug_info.get("visible_sat_decisions", 0.0))
 
     return {
@@ -203,6 +205,7 @@ def summarize_debug(debug_info):
         "avg_penalty_visibility": float(debug_info.get("penalty_visibility_sum", 0.0)) / n,
         "avg_penalty_propagation": float(debug_info.get("penalty_propagation_sum", 0.0)) / n,
         "avg_penalty_zero_alloc": float(debug_info.get("penalty_zero_alloc_sum", 0.0)) / n,
+        "avg_penalty_sat_power": float(debug_info.get("penalty_sat_power_sum", 0.0)) / n,
         "sat_usage_rate": sat_act / n,
         "split_usage_rate": split_act / n,
         "split_in_sat_rate": split_act / max(sat_act, 1.0),
@@ -215,6 +218,8 @@ def summarize_debug(debug_info):
         "sat_timeout_rate": sat_to / max(sat_act, 1.0),
         "avg_sat_delay_over_gamma": float(debug_info.get("sat_delay_over_gamma_sum", 0.0)) / max(sat_to, 1.0),
         "avg_sat_load_penalty": float(debug_info.get("sat_load_penalty_sum", 0.0)) / n,
+        "avg_sat_power_penalty": float(debug_info.get("sat_power_penalty_sum", 0.0)) / n,
+        "avg_sat_power_excess_ratio": float(debug_info.get("sat_power_excess_ratio_sum", 0.0)) / sat_ppc,
         "avg_sat_usage_ratio_on_feasible_sat": float(debug_info.get("sat_usage_ratio_sum", 0.0)) / sat_fms,
         "avg_sat_peak_usage_ratio_on_feasible_sat": float(debug_info.get("sat_peak_usage_ratio_sum", 0.0)) / sat_fms,
         "max_sat_peak_usage_ratio": float(debug_info.get("sat_peak_usage_ratio_max", 0.0)),
@@ -254,18 +259,22 @@ def save_results(prefix: str, train_rewards: list, eval_rewards: list,
 # ═════════════════════════════════════════════════════════════════════════════
 
 def _estimate_optimistic_delay(md, action_idx: int, bs_list, sat_list) -> float:
+    """? BL5 ??????????????????"""
     B, C = md.B, md.C
 
     if action_idx == 0:
+        # ????????????
         return B * C / (para.F_MD_MAX * para.F_MD)
 
     if 1 <= action_idx <= N:
+        # BS ????????????? BS ???
         rate_bs = para.GROUND_BW * math.log2(1.0 + 1000.0)
         t_tran = B / rate_bs
         t_comp = B * C / para.BS_F_MAX
         return t_tran + t_comp
 
     if N + 1 <= action_idx <= N + S:
+        # ?? SAT ??????????????
         sat_idx = action_idx - (N + 1)
         sat = sat_list[sat_idx]
         if not md.is_sat_visible(sat):
@@ -276,6 +285,7 @@ def _estimate_optimistic_delay(md, action_idx: int, bs_list, sat_list) -> float:
         t_comp = B * C / para.SAT_F_MAX
         return t_prop + t_tran + t_comp
 
+    # ???????? 50/50 ?????????? split action ????????
     pair_idx = action_idx - SPLIT_ACTION_START
     if pair_idx < 0 or pair_idx >= len(SPLIT_SAT_PAIRS):
         return float("inf")
@@ -747,9 +757,6 @@ def run_masked_hd3qn_experiment(baseline_name: str, topo_mask: np.ndarray):
                     f"bs={train_dbg['bs_actions']:.0f} "
                     f"sat={train_dbg['sat_actions']:.0f}"
                 )
-
-            # 与主实验保持一致：每个 episode 结束后推进一次学习率调度器。
-            agent.alg.scheduler.step()
 
         save_results(prefix, train_rewards, eval_rewards,
                      debug_history, train_metric_history, eval_metric_history)

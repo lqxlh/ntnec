@@ -32,10 +32,10 @@ RUN_PROFILES = {
         "memory_warmup_size": 2000,
         "sac_memory_warmup_size": 2000,
         "steps": 200,
-        "max_episode": 150,
+        "max_episode": 100,
         "seed": [1],
-        "batch_size": 256,
-        "sac_batch_size": 256,
+        "batch_size": 512,
+        "sac_batch_size": 512,
         "eval_interval": 1,
         "eval_rounds": 2,
     },
@@ -85,10 +85,10 @@ M = 10
 # 奖励函数中的权重：
 # 这里对应归一化后的时延、能耗、任务价值三项权衡。
 # 归一化后三项都接近 0~1，权重才具有明确可比性。
-w_t = 0.65
-w_e = 0.25
+w_t = 0.7
+w_e = 0.3
 # 任务价值是随机任务属性，权重不宜太大，否则会掩盖动作本身造成的时延/能耗差异。
-w_v = 0.10
+w_v = 0.00
 
 # 资源配置：
 F_BS = [8e9, 8e9]
@@ -114,10 +114,10 @@ SPLIT_OVERHEAD_PENALTY = -0.01
 # 分片动作掩码用几个代表性比例做“存在可行解”判断，避免要求两颗卫星都能独立跑完整任务。
 SPLIT_FEASIBILITY_RATIOS = (0.25, 0.50, 0.75)
 # 分片比例探索只作用于连续动作第 0 维，防止比例长期卡在 SPLIT_MIN_RATIO 边界。
-SPLIT_RATIO_NOISE_FLOOR = 0.05
-SPLIT_RATIO_EXPLORE_PROB = 0.20
+SPLIT_RATIO_NOISE_FLOOR = 0.02
+SPLIT_RATIO_EXPLORE_PROB = 0.10
 # 轻量边界惩罚让分片比例远离 0/1 原始输出边界，但权重要小，避免强行固定到 0.5。
-SPLIT_RATIO_BOUNDARY_WEIGHT = 0.006
+SPLIT_RATIO_BOUNDARY_WEIGHT = 0.002
 
 # 当前模式对应的训练规模。
 steps = ACTIVE_PROFILE["steps"]
@@ -171,6 +171,10 @@ GROUND_NOISE = 1.6e-13#1e-13
 GROUND_GAIN_BETA = 1e-4
 GROUND_PATHLOSS = 3.0
 MD_MAX_POWER = 0.1
+# 卫星链路所需最小功率超过终端最大发射功率时，不再做硬 mask，而是在 reward 中按超出比例做软惩罚。
+SAT_POWER_EXCESS_PENALTY_WEIGHT = 0.35
+# 超功率比例可能因为极差链路变得很大，这里截断后再平方，避免单步 reward 被异常值完全打爆。
+SAT_POWER_EXCESS_RATIO_CLIP = 10.0
 
 # 地面 MEC 拥塞建模：
 GROUND_QUEUE_DELAY_MIN = 0.00
@@ -289,7 +293,7 @@ PENALTY_ZERO_ALLOCATION = -0.15
 # 而是在“卫星动作已经可行”时，再给策略一个“避免单时隙过度依赖卫星”的平滑引导。
 # 这样更适合解释当前实验里观察到的现象：
 # 卫星适度参与可以改善性能，但卫星使用过猛时，系统奖励和成功率会明显波动。
-ENABLE_SAT_LOAD_SOFT_PENALTY = 1
+ENABLE_SAT_LOAD_SOFT_PENALTY = 0
 
 # SAT_TARGET_USAGE 表示单颗卫星在一个时隙内更稳妥的目标负载比例。
 # 当某颗卫星的累计占用比例超过这个阈值后，奖励里会开始增加软惩罚。

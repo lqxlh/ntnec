@@ -145,7 +145,7 @@ class HD3QN(nn.Module):
         self.scheduler = DualScheduler(q_scheduler, cont_scheduler)
         self.td_target_clip = 20.0
 
-        self.cont_loss_weight = 0.1
+        self.cont_loss_weight = 0.06
         # 分片比例边界惩罚只约束 split 动作的连续第 0 维，避免比例输出长期贴在 0 或 1。
         self.split_ratio_boundary_weight = float(getattr(para, "SPLIT_RATIO_BOUNDARY_WEIGHT", 0.0))
         # 新增：从 para.py 读取软更新参数 tau

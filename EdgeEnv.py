@@ -96,6 +96,10 @@ class EdgeEnv:
             "mask_sat_remaining_budget_fail_count": 0,
             "mask_sat_power_excess_ratio_sum": 0.0,
             "mask_sat_power_excess_ratio_count": 0,
+            # 这里单独统计“P_min_sat > MD_MAX_POWER”带来的 reward 软惩罚，方便确认它已经不再只是 mask 诊断项。
+            "sat_power_penalty_count": 0,
+            "sat_power_penalty_sum": 0.0,
+            "sat_power_excess_ratio_sum": 0.0,
             # 这组统计量专门用于分析“卫星使用率高但收益反而下降”是否由过载引起。
             # 论文解释上，它们刻画的是一个时隙内卫星资源占用强度与策略稳定性的关系。
             "sat_load_penalty_count": 0,
@@ -139,6 +143,8 @@ class EdgeEnv:
             "penalty_visibility_sum": 0.0,
             "penalty_propagation_sum": 0.0,
             "penalty_zero_alloc_sum": 0.0,
+            # 这里汇总超功率软惩罚本身，便于和总 reward、传播惩罚分开分析。
+            "penalty_sat_power_sum": 0.0,
             "reward_sum": 0.0,
             "steps": 0,
             "avg_total_energy_sum": 0.0,
@@ -213,6 +219,21 @@ class EdgeEnv:
         excess_ratio = max(0.0, next_ratio - para.SAT_TARGET_USAGE)
         soft_penalty = -para.SAT_LOAD_PENALTY_WEIGHT * (excess_ratio ** 2)
         return soft_penalty, prev_ratio, next_ratio
+
+    def _calc_sat_power_excess_penalty(self, power_result):
+        # 这里把 P_min_sat > MD_MAX_POWER 从“直接禁止动作”改成“按超出比例扣 reward”。
+        # excess_ratio = 0 表示功率上限内可行；excess_ratio = 1 表示所需最小功率比上限多 100%。
+        p_min_sat = float(power_result.get("P_min_sat", 0.0))
+        if not np.isfinite(p_min_sat):
+            # 当 P_min_sat 为 inf 时，说明链路在当前时延预算下非常差，用截断值代表一个很强但有限的惩罚。
+            excess_ratio = float(para.SAT_POWER_EXCESS_RATIO_CLIP)
+        else:
+            # 只惩罚超过终端最大发射功率的部分，未超过时保持 0，不影响正常卫星动作。
+            excess_ratio = max(p_min_sat / max(float(para.MD_MAX_POWER), 1e-12) - 1.0, 0.0)
+        # 截断超功率比例后再平方，既保留“越超越罚”的趋势，也避免异常链路把 reward 数值拉爆。
+        clipped_ratio = float(np.clip(excess_ratio, 0.0, para.SAT_POWER_EXCESS_RATIO_CLIP))
+        penalty = -float(para.SAT_POWER_EXCESS_PENALTY_WEIGHT) * (clipped_ratio ** 2)
+        return penalty, clipped_ratio
 
     def reset(self, md_list, bs_list, sat_list):
         for md in md_list:
@@ -433,7 +454,8 @@ class EdgeEnv:
             t_isl = self._get_satellite_link_sample(md, sat_list, sat_idx)["T_isl_s"]
             t_comp, _ = sat.computing(md.B, md.C, actual_freq)
             _, power_result = self._calc_sat_power(md, sat, t_comp, t_isl)
-            if power_result["remaining_budget_sat"] <= 0 or power_result["satellite_infeasible"]:
+            # 分片 mask 阶段只保留“没有剩余传输预算”这类前置硬失败，P_min_sat 超功率交给 reward 软惩罚处理。
+            if power_result["remaining_budget_sat"] <= 0:
                 return False, float("inf")
             t_tran, _ = md.sat_offloading(
                 md.B,
@@ -442,6 +464,9 @@ class EdgeEnv:
                 doppler_loss=power_result["channel_info"]["doppler_loss"],
             )
             total_delay = power_result["T_prop_s"] + t_isl + t_tran + t_comp
+            if power_result["power_limit_exceeded"]:
+                # 分片动作的 mask 也不能再因为 P_min_sat 超过 MD_MAX_POWER 被挡掉；这里给外层一个可通过的乐观时延。
+                return True, max(md.Gamma - para.SPLIT_MERGE_DELAY, 0.0)
             return total_delay <= md.Gamma, total_delay
         finally:
             # 掩码阶段不能污染真实任务大小，否则后续执行和日志都会偏掉。
@@ -472,7 +497,7 @@ class EdgeEnv:
         # 1. 卫星可见；
         # 2. 卫星剩余算力至少能容纳最小分配频率；
         # 3. 在“当前卫星可提供的较优频率”下，剩余时延预算 bar_Gamma^SAT > 0；
-        # 4. 在该频率对应的链路条件下，P_min^SAT <= P_max^MD。
+        # 4. P_min^SAT > P_max^MD 只记录诊断并进入 reward 软惩罚，不再作为硬 mask。
         # 这里特意不用 SAT_F_MIN 去判可行性。
         # 原因是：论文中的 D3QN 只负责决定“是否选这颗卫星”，
         # 真正的连续频率分配是后续 SAC 再做。
@@ -502,17 +527,17 @@ class EdgeEnv:
             self.last_debug["mask_sat_remaining_budget_fail_sum"] += power_result["remaining_budget_sat"]
             self.last_debug["mask_sat_remaining_budget_fail_count"] += 1
             return False
-        if power_result["satellite_infeasible"]:
+        power_limit_exceeded = bool(power_result.get("power_limit_exceeded", False))
+        if power_limit_exceeded:
             # 对应论文里的最小可行功率 P_min^SAT 超过终端最大功率上限。
-            # 这里表示：虽然计算频率侧可能有解，但无线链路侧仍然不可行。
+            # 现在这里只记录诊断信息，不再把该卫星动作从 DQN 候选集中硬删除。
             self.last_debug["mask_sat_power_infeasible"] += 1
             # 这里只裁剪诊断日志里的功率缺口比例，避免 inf 或极端值把平均数拉爆。
-            # 这不改变 P_min_sat、selected_power、reward，也不影响训练逻辑。
+            # 真正的训练信号会在 step() 中通过 sat_power_penalty 进入 reward。
             raw_power_excess_ratio = power_result["P_min_sat"] / max(para.MD_MAX_POWER, 1e-12)
             power_excess_ratio = float(np.clip(raw_power_excess_ratio, 0.0, 100.0))
             self.last_debug["mask_sat_power_excess_ratio_sum"] += power_excess_ratio
             self.last_debug["mask_sat_power_excess_ratio_count"] += 1
-            return False
 
         # 问题 1 的关键修复：卫星动作进入 DQN 候选集之前，也要估算最终总时延是否满足 deadline。
         # 这里使用 candidate_freq 做乐观估算；如果乐观情况下仍然超过 Gamma，就说明该卫星动作不适合作为候选动作。
@@ -524,11 +549,15 @@ class EdgeEnv:
         )
         total_delay_candidate = power_result["T_prop_s"] + t_isl + t_tran_candidate + t_comp_candidate
         if total_delay_candidate > md.Gamma:
+            if power_limit_exceeded:
+                # 如果超时是由 P_min_sat 超过 MD_MAX_POWER 导致的，就让动作通过 mask，并在 reward 里承担超功率和 deadline 惩罚。
+                self.last_debug["mask_sat_feasible"] += 1
+                return True
             self.last_debug["mask_sat_remaining_budget_fail_sum"] += md.Gamma - total_delay_candidate
             self.last_debug["mask_sat_remaining_budget_fail_count"] += 1
             return False
 
-        # 只有通过以上所有约束，这个卫星动作才真正进入 D3QN 的候选集合。
+        # 通过可见性、资源和剩余预算检查后，这个卫星动作进入 D3QN 候选集合；超功率问题留给 reward 学习。
         self.last_debug["mask_sat_feasible"] += 1
         return True
 
@@ -551,6 +580,7 @@ class EdgeEnv:
         penalty_propagation,
         penalty_zero_alloc,
         sat_load_penalty,
+        sat_power_penalty,
         deadline_violated,
         deadline_overrun_ratio,
     ):
@@ -572,7 +602,7 @@ class EdgeEnv:
         deadline_overrun_penalty = -para.REWARD_OVERRUN_WEIGHT * deadline_overrun_ratio
         # 这里恢复成论文大纲里的主奖励结构：
         # reward = -phi + r_time + r_fre + r_vis + r_prop
-        # 同时保留你后续加入的零分配惩罚和卫星负载软惩罚，
+        # 同时保留你后续加入的零分配惩罚、卫星负载软惩罚和卫星超功率软惩罚，
         # 因为它们属于训练实现层面的辅助约束，不改变主干目标表达式。
         reward_val = (
             -phi_cost
@@ -582,6 +612,7 @@ class EdgeEnv:
             + penalty_propagation
             + penalty_zero_alloc
             + sat_load_penalty
+            + sat_power_penalty
             + deadline_bonus
             + deadline_overrun_penalty
         )
@@ -613,6 +644,9 @@ class EdgeEnv:
             "remaining_budget_sat": 0.0,
             "P_min_sat": 0.0,
             "p_star_sat": 0.0,
+            # 这两个字段记录卫星最小发射功率超出上限的比例和对应 reward 软惩罚。
+            "sat_power_excess_ratio": 0.0,
+            "sat_power_penalty": 0.0,
             "bar_w_delay_s": 0.0,
             "bar_w_energy_s": 0.0,
             "g_sat_raw": 0.0,
@@ -707,8 +741,14 @@ class EdgeEnv:
         metrics["bar_w_delay_s"] = power_result["bar_w_delay_s"]
         metrics["bar_w_energy_s"] = power_result["bar_w_energy_s"]
 
-        if power_result["satellite_infeasible"]:
+        if power_result["invalid_budget"]:
+            # 剩余传输预算非正仍属于传播/时延结构上的硬失败，继续沿用原来的传播惩罚。
             penalty_propagation = para.PENALTY_PROPAGATION
+        if power_result["power_limit_exceeded"]:
+            # P_min_sat 超过 MD_MAX_POWER 时不再把动作判死，而是把超出比例换成 reward 软惩罚。
+            metrics["sat_power_penalty"], metrics["sat_power_excess_ratio"] = self._calc_sat_power_excess_penalty(
+                power_result
+            )
 
         sat_link_info = dict(power_result["channel_info"])
         sat_link_info["snr_sat"] = (
@@ -789,6 +829,10 @@ class EdgeEnv:
         metrics["E_comp_s"] = metrics_a["E_comp_s"] + metrics_b["E_comp_s"] + para.SPLIT_EXTRA_ENERGY
         metrics["T_prop_s"] = max(metrics_a["T_prop_s"], metrics_b["T_prop_s"])
         metrics["T_isl_s"] = max(metrics_a["T_isl_s"], metrics_b["T_isl_s"])
+        # 分片动作会同时使用两颗卫星，因此超功率 reward 惩罚需要把两个子任务的惩罚相加。
+        metrics["sat_power_penalty"] = metrics_a["sat_power_penalty"] + metrics_b["sat_power_penalty"]
+        # 分片动作的超功率比例用两颗卫星中的最大值，便于日志反映最严重的那条链路。
+        metrics["sat_power_excess_ratio"] = max(metrics_a["sat_power_excess_ratio"], metrics_b["sat_power_excess_ratio"])
         return metrics, penalty_resource, penalty_visibility, penalty_propagation, bool(ok_a and ok_b)
 
     def _aggregate_total_delay_energy(self, action_idx, metrics):
@@ -821,6 +865,8 @@ class EdgeEnv:
         penalty_visibility = 0.0
         penalty_propagation = 0.0
         penalty_zero_alloc = 0.0
+        # 这个变量专门承接 P_min_sat > MD_MAX_POWER 的软惩罚，避免继续把它当作动作 mask。
+        penalty_sat_power = 0.0
 
         selected_visible_sat_count = sum(1 for sat in sat_list if md.is_sat_visible(sat))
         self.last_debug["visible_sat_total_count"] += selected_visible_sat_count
@@ -881,6 +927,14 @@ class EdgeEnv:
                 self.last_debug["resource_penalty"] += 1
             if propagation_penalty != 0:
                 self.last_debug["propagation_penalty"] += 1
+
+        # 卫星普通动作和分片动作都会把超功率惩罚写入 metrics；非卫星动作该值保持 0。
+        penalty_sat_power = metrics["sat_power_penalty"]
+        if penalty_sat_power != 0.0:
+            # 记录执行阶段真实产生的超功率惩罚，和 mask 阶段诊断计数分开看。
+            self.last_debug["sat_power_penalty_count"] += 1
+            self.last_debug["sat_power_penalty_sum"] += penalty_sat_power
+            self.last_debug["sat_power_excess_ratio_sum"] += metrics["sat_power_excess_ratio"]
 
         total_delay, total_energy = self._aggregate_total_delay_energy(b, metrics)
         # ================== [新增] 物理指标安全截断与丢弃保护 ==================
@@ -993,6 +1047,7 @@ class EdgeEnv:
             penalty_propagation=penalty_propagation,
             penalty_zero_alloc=penalty_zero_alloc,
             sat_load_penalty=sat_load_penalty,
+            sat_power_penalty=penalty_sat_power,
             deadline_violated=deadline_violated,
             deadline_overrun_ratio=deadline_overrun_ratio,
         )
@@ -1046,7 +1101,8 @@ class EdgeEnv:
             # 这里单独记录“卫星动作且真实可行”的样本统计。
             # 论文里像 g_bar_s、P_min_sat、p_star_sat 这类量更适合在“真正可执行的卫星卸载样本”上解释，
             # 否则少量不可行样本的极端数值会把均值严重污染，影响我们判断策略是否稳定。
-            if penalty_visibility == 0 and penalty_propagation == 0 and penalty_resource == 0:
+            # 解释 P_min_sat 等物理量的“可行样本均值”时，仍排除已经触发超功率软惩罚的样本。
+            if penalty_visibility == 0 and penalty_propagation == 0 and penalty_resource == 0 and penalty_sat_power == 0:
                 self.last_debug["avg_g_bar_s_feasible_sum"] += metrics["g_bar_s"]
                 self.last_debug["avg_remaining_budget_sat_feasible_sum"] += metrics["remaining_budget_sat"]
                 self.last_debug["avg_P_min_sat_feasible_sum"] += metrics["P_min_sat"]
@@ -1065,6 +1121,8 @@ class EdgeEnv:
         self.last_debug["penalty_visibility_sum"] += penalty_visibility
         self.last_debug["penalty_propagation_sum"] += penalty_propagation
         self.last_debug["penalty_zero_alloc_sum"] += penalty_zero_alloc
+        # 汇总 P_min_sat 超过 MD_MAX_POWER 带来的 reward 软惩罚，方便训练后算平均值。
+        self.last_debug["penalty_sat_power_sum"] += penalty_sat_power
         self.last_debug["deadline_bonus_sum"] += deadline_bonus
         self.last_debug["deadline_overrun_penalty_sum"] += deadline_overrun_penalty
         # 在 reward 计算完成的最后
