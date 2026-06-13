@@ -32,7 +32,7 @@ RUN_PROFILES = {
         "memory_warmup_size": 2000,
         "sac_memory_warmup_size": 2000,
         "steps": 200,
-        "max_episode": 100,
+        "max_episode": 500,
         "seed": [1],
         "batch_size": 256,
         "sac_batch_size": 256,
@@ -59,7 +59,7 @@ SAC_BATCH_SIZE = ACTIVE_PROFILE["sac_batch_size"]
 #离散的学习率
 LEARNING_RATE = 1e-4
 #连续的学习率
-CONT_LEARNING_RATE = 1e-4
+CONT_LEARNING_RATE = 1e-5
 ACTOR_LR = 3e-4
 CRITIC_LR = 3e-4
 DQN_GAMMA = 0.99
@@ -85,10 +85,10 @@ M = 10
 # 奖励函数中的权重：
 # 这里对应归一化后的时延、能耗、任务价值三项权衡。
 # 归一化后三项都接近 0~1，权重才具有明确可比性。
-w_t = 0.7
-w_e = 0.3
+w_t = 0.65
+w_e = 0.25
 # 任务价值是随机任务属性，权重不宜太大，否则会掩盖动作本身造成的时延/能耗差异。
-w_v = 0.00
+w_v = 0.1
 
 # 资源配置：
 F_BS = [8e9, 8e9]
@@ -143,11 +143,11 @@ MAX_MD_SPEED = 5
 # 2. 放宽任务最大容忍时延 Gamma，给“传播 + ISL + 传输 + 计算”留下实际可行窗口。
 # 在此基础上，为了削弱“本地永远最优”的趋势，这里再略微抬高任务计算强度，
 # 使部分任务在终端本地执行时更容易暴露出时延劣势。
-TASK_B_MIN = int(0.3e6)
+TASK_B_MIN = int(1.2e6)
 TASK_B_MAX = int(1.8e6)
-TASK_C_MIN = 200
-TASK_C_MAX = 1200
-TASK_GAMMA_MIN = 0.5
+TASK_C_MIN = 600
+TASK_C_MAX = 800
+TASK_GAMMA_MIN = 0.8
 TASK_GAMMA_MAX = 2.2
 TASK_PRIORITY_MIN = 1
 TASK_PRIORITY_MAX = 3
@@ -161,7 +161,7 @@ REWARD_ENERGY_NORM = 5.0
 REWARD_VALUE_NORM = TASK_PRIORITY_MAX
 # deadline 成功奖励和超时连续惩罚，用来把 reward 排名更直接地对齐“时延低、任务成功率高”。
 REWARD_SUCCESS_BONUS = 0.18
-REWARD_OVERRUN_WEIGHT = 0.60
+REWARD_OVERRUN_WEIGHT = 0.20
 
 # 地面链路参数：
 # 这些值对应论文地面 MEC 基线部分的带宽、噪声、路径损耗和发射功率设定。
@@ -264,6 +264,7 @@ SAT_LOCAL_OFFSETS = [
 # 星间链路参数：
 SAT_ISL_MEAN_LOAD_RATIO = 0.02   # Pareto(1.5) 均值 ×0.01
 SAT_ISL_MAX_RATE = 1e9
+ISL_DELAY_FIXED=0.003
 # 传播与链路的归一化辅助上界：
 # 这些量只用于把距离、传播时延等输入状态归一化到 [0,1]。
 MAX_SAT_HORIZONTAL_DISTANCE = math.sqrt(
@@ -278,7 +279,7 @@ MAX_PROP_DELAY = MAX_SAT_DISTANCE / LIGHT_SPEED
 PENALTY_TIME = 0
 PENALTY_RESOURCE = -0.10
 PENALTY_VISIBILITY = -0.05
-PENALTY_PROPAGATION = 0
+PENALTY_PROPAGATION = -0.05
 PENALTY_ZERO_ALLOCATION = -0.05
 
 # 卫星软约束参数：
@@ -286,7 +287,7 @@ PENALTY_ZERO_ALLOCATION = -0.05
 # 而是在“卫星动作已经可行”时，再给策略一个“避免单时隙过度依赖卫星”的平滑引导。
 # 这样更适合解释当前实验里观察到的现象：
 # 卫星适度参与可以改善性能，但卫星使用过猛时，系统奖励和成功率会明显波动。
-ENABLE_SAT_LOAD_SOFT_PENALTY = 0
+ENABLE_SAT_LOAD_SOFT_PENALTY = 1
 
 # SAT_TARGET_USAGE 表示单颗卫星在一个时隙内更稳妥的目标负载比例。
 # 当某颗卫星的累计占用比例超过这个阈值后，奖励里会开始增加软惩罚。
@@ -295,7 +296,7 @@ SAT_TARGET_USAGE = 0.6
 # SAT_LOAD_PENALTY_WEIGHT 控制这项“卫星过载软惩罚”的强度。
 # 这里先取较小值，保证论文主目标仍然是时延-能耗-任务价值权衡，
 # 软惩罚只作为稳定两阶段联合训练的辅助项。
-SAT_LOAD_PENALTY_WEIGHT = 0.3
+SAT_LOAD_PENALTY_WEIGHT = 0.1
 
 # ============================================================
 # PER（优先经验回放）参数

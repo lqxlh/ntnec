@@ -67,63 +67,46 @@ class SAT:
         )
         return satrec
 
-    def _propagate_eci(self, time_index):
-        # 这里对应论文里的“按时刻 t 计算卫星三维位置与速度”。
-        # SGP4 返回：
-        # - position_km：地心惯性系位置，单位 km
-        # - velocity_km_s：地心惯性系速度，单位 km/s
-        epoch_year, epoch_month, epoch_day, epoch_hour, epoch_minute, epoch_second = para.SAT_EPOCH
-        delta_seconds = time_index * para.SAT_DECISION_DT
-        total_seconds = epoch_hour * 3600.0 + epoch_minute * 60.0 + epoch_second + delta_seconds
-        add_days = int(total_seconds // 86400.0)
-        remain_seconds = total_seconds - add_days * 86400.0
-        current_hour = int(remain_seconds // 3600.0)
-        remain_seconds -= current_hour * 3600.0
-        current_minute = int(remain_seconds // 60.0)
-        current_second = remain_seconds - current_minute * 60.0
-
-        jd, fr = jday(
-            epoch_year,
-            epoch_month,
-            epoch_day + add_days,
-            current_hour,
-            current_minute,
-            current_second,
-        )
-        error_code, position_km, velocity_km_s = self.satrec.sgp4(jd, fr)
-        if error_code != 0:
-            raise RuntimeError(f"SGP4 propagation failed for sat {self.id} at step {time_index}: code={error_code}")
-
-        position_m = tuple(component * 1000.0 for component in position_km)
-        velocity_m_s = tuple(component * 1000.0 for component in velocity_km_s)
-        return position_m, velocity_m_s
-
-    def _eci_to_local_projection(self, position_m, velocity_m_s):
-        # 这里把地心惯性系三维坐标映射到当前环境使用的“局部二维投影坐标”。
-        # 物理含义上，它对应论文中的 x_{s,t}^{SAT}, y_{s,t}^{SAT}：
-        # 1. 先取相对初始时刻的位置变化；
-        # 2. 再把 ECI 的 x/y 分量近似看作局部水平平面的二维投影；
-        # 3. 最后叠加一个固定平移偏置，让多颗卫星在仿真区域内形成不同可见窗口。
-        if self._eci_reference is None:
-            self._eci_reference = position_m
-
-        delta_x = position_m[0] - self._eci_reference[0]
-        delta_y = position_m[1] - self._eci_reference[1]
-        local_x = delta_x + self._offset_x
-        local_y = delta_y + self._offset_y
-        local_vx = velocity_m_s[0]
-        local_vy = velocity_m_s[1]
-        local_speed = math.sqrt(local_vx ** 2 + local_vy ** 2)
-        return local_x, local_y, local_vx, local_vy, local_speed
-
     def _build_trajectory_table(self):
-        # 这里对应论文中的“预计算卫星轨迹表”。
-        # 这样训练阶段的 step() 不需要每次实时调用 SGP4，可显著降低开销。
-        self.trajectory_table = []
-        self._eci_reference = None
-        for time_index in range(para.SAT_TRAJECTORY_STEPS):
-            position_m, velocity_m_s = self._propagate_eci(time_index)
-            self.trajectory_table.append(self._eci_to_local_projection(position_m, velocity_m_s))
+        # 这里使用 SGP4 的原生 NumPy 向量化接口进行终极提速
+        import numpy as np
+        from sgp4.api import jday
+        # 1. 仅计算一次初始时刻的 Julian Date
+        epoch_y, epoch_m, epoch_d, epoch_h, epoch_min, epoch_s = para.SAT_EPOCH
+        jd0, fr0 = jday(epoch_y, epoch_m, epoch_d, epoch_h, epoch_min, epoch_s)
+        # 2. 用 NumPy 向量化生成整个 Episode 所有时隙的 jd 和 fr
+        # 因为每次只推进 SAT_DECISION_DT 秒，所以时间增量可以直接换算成“天”相加
+        steps = para.SAT_TRAJECTORY_STEPS
+        time_indices = np.arange(steps, dtype=np.float64)
+        delta_days = (time_indices * para.SAT_DECISION_DT) / 86400.0  # 一天 86400 秒
+        jd_array = np.full(steps, jd0, dtype=np.float64)
+        fr_array = fr0 + delta_days
+        # 3. 核心提速点：调用底层 C++ 向量化 SGP4 批量计算
+        # 一次性算出所有时隙的三维坐标和速度！
+        err_array, r_array, v_array = self.satrec.sgp4_array(jd_array, fr_array)
+        if np.any(err_array != 0):
+            bad_idx = np.where(err_array != 0)[0][0]
+            raise RuntimeError(f"SGP4 failed for sat {self.id} at step {bad_idx}: code={err_array[bad_idx]}")
+        # 4. 向量化单位转换 (km -> m)
+        r_m = r_array * 1000.0
+        v_m_s = v_array * 1000.0
+        # 5. 向量化投影坐标变换 (ECI -> 局部二维平面)
+        self._eci_reference = r_m[0]
+        delta_r = r_m - self._eci_reference
+        local_x = delta_r[:, 0] + self._offset_x
+        local_y = delta_r[:, 1] + self._offset_y
+        local_vx = v_m_s[:, 0]
+        local_vy = v_m_s[:, 1]
+        local_speed = np.sqrt(local_vx ** 2 + local_vy ** 2)
+        # 6. 一次性打包为 list of tuples，兼容原来的查表接口
+        # 使用 zip 转换效率极高
+        self.trajectory_table = list(zip(
+            local_x.tolist(),
+            local_y.tolist(),
+            local_vx.tolist(),
+            local_vy.tolist(),
+            local_speed.tolist()
+        ))
 
     def _apply_state_at_index(self, time_index):
         # 这里把预计算轨迹表中的状态写回当前卫星对象，

@@ -120,12 +120,15 @@ class SumTree:
     def _retrieve(self, idx, s):
         left = 2 * idx + 1
         right = left + 1
-        if left >= len(self.tree):
-            return idx
-        if s <= self.tree[left]:
-            return self._retrieve(left, s)
-        else:
-            return self._retrieve(right, s - self.tree[left])
+        while left < len(self.tree):
+            if s <= self.tree[left]:
+                idx = left
+            else:
+                s -= self.tree[left]
+                idx = right
+            left = 2 * idx + 1
+            right = left + 1
+        return idx
 
     def total(self):
         return self.tree[0]
@@ -166,8 +169,15 @@ class PrioritizedReplayMemory:
         return self.tree.n_entries
 
     def append(self, exp):
-        """存入一条完整的 7 元组经验"""
-        self.tree.add(self.max_priority, exp)
+        """转成 float32 再存，内存占用瞬间减半"""
+        s = np.asarray(exp[0], dtype=np.float32)
+        da = int(exp[1])
+        ca = np.asarray(exp[2], dtype=np.float32)
+        r = float(exp[3])
+        sp = np.asarray(exp[4], dtype=np.float32)
+        done = bool(exp[5])
+        nm = np.asarray(exp[6], dtype=bool) if exp[6] is not None else None
+        self.tree.add(self.max_priority, (s, da, ca, r, sp, done, nm))
 
     def sample(self, batch_size: int):
         mini_batch = []

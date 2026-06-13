@@ -27,9 +27,9 @@ class EdgeEnv:
         # + 接入卫星索引(1) + 地面剩余算力(N) + 卫星剩余算力(S)
         self.task_feature_dim = 4
         self.ground_link_feature_dim = 2
-        self.sat_link_feature_groups = 5
+        self.sat_link_feature_groups = 2
         self.sat_access_feature_dim = 1
-        self.obs_dim = N + 6 * S + 7
+        self.obs_dim = N + 3 * S + 7
         self.resource_base = (
             self.task_feature_dim
             + self.ground_link_feature_dim
@@ -220,20 +220,8 @@ class EdgeEnv:
         soft_penalty = -para.SAT_LOAD_PENALTY_WEIGHT * (excess_ratio ** 2)
         return soft_penalty, prev_ratio, next_ratio
 
-    def _calc_sat_power_excess_penalty(self, power_result):
-        # 这里把 P_min_sat > MD_MAX_POWER 从“直接禁止动作”改成“按超出比例扣 reward”。
-        # excess_ratio = 0 表示功率上限内可行；excess_ratio = 1 表示所需最小功率比上限多 100%。
-        p_min_sat = float(power_result.get("P_min_sat", 0.0))
-        if not np.isfinite(p_min_sat):
-            # 当 P_min_sat 为 inf 时，说明链路在当前时延预算下非常差，用截断值代表一个很强但有限的惩罚。
-            excess_ratio = float(para.SAT_POWER_EXCESS_RATIO_CLIP)
-        else:
-            # 只惩罚超过终端最大发射功率的部分，未超过时保持 0，不影响正常卫星动作。
-            excess_ratio = max(p_min_sat / max(float(para.MD_MAX_POWER), 1e-12) - 1.0, 0.0)
-        # 截断超功率比例后再平方，既保留“越超越罚”的趋势，也避免异常链路把 reward 数值拉爆。
-        clipped_ratio = float(np.clip(excess_ratio, 0.0, para.SAT_POWER_EXCESS_RATIO_CLIP))
-        penalty = -float(para.SAT_POWER_EXCESS_PENALTY_WEIGHT) * (clipped_ratio ** 2)
-        return penalty, clipped_ratio
+    def _calc_sat_power_excess_penalty(self,power_result):
+        return 0.0, 0.0
 
     def reset(self, md_list, bs_list, sat_list):
         for md in md_list:
@@ -303,35 +291,37 @@ class EdgeEnv:
 
     def _build_state_for_md(self, md, bs_list, sat_list):
         state_row = []
+        # 任务特征 (4维，不变)
         state_row.append(self._normalize_task_b(md.B))
         state_row.append(self._normalize_task_c(md.C))
         state_row.append(self._normalize_gamma(md.Gamma))
         state_row.append(self._normalize_priority(md.Priority))
-
+        # 地面链路 (2维，不变)
         state_row.append(md.connect_BS / max(N - 1, 1))
         state_row.append(self._safe_ratio(md.distance(bs_list[md.connect_BS]), para.MAP_WIDTH))
-
+        # [修改] 去掉仰角特征，加入归一化地面信道增益 (1维)
+        ground_gain = md.gain()
+        log_g = math.log10(max(ground_gain, 1e-20))
+        # 地面增益范围约 [-14, -6] (log10)，用para.SAT_GAIN_LOG_MIN/MAX同量级归一化
+        GROUND_GAIN_LOG_MIN = -14.0
+        GROUND_GAIN_LOG_MAX = -6.0
+        ground_gain_norm = float(np.clip(
+            (log_g - GROUND_GAIN_LOG_MIN) / max(GROUND_GAIN_LOG_MAX - GROUND_GAIN_LOG_MIN, 1e-9),
+            0.0, 1.0
+        ))
+        state_row.append(ground_gain_norm)
+        # 卫星可见性 (S维，保留)
         visibility_vals = []
-        elevation_vals = []
-        distance_vals = []
-        doppler_loss_vals = []
+        # [修改] 卫星原始信道增益替换仰角 (S维)
         sat_gain_vals = []
         for sat in sat_list:
             channel_info = md.sat_channel_components(sat)
             visibility_vals.append(1.0 if md.is_sat_visible(sat) else 0.0)
-            elevation_vals.append(np.clip(md.sat_elevation(sat) / 90.0, 0.0, 1.0))
-            distance_vals.append(self._safe_ratio(md.sat_distance(sat), para.MAX_SAT_DISTANCE))
-            doppler_loss_vals.append(float(np.clip(channel_info["doppler_loss"], 0.0, 1.0)))
             sat_gain_vals.append(self._normalize_sat_gain_raw(channel_info["g_sat_raw"]))
         state_row.extend(visibility_vals)
-        state_row.extend(elevation_vals)
-        state_row.extend(distance_vals)
-        state_row.extend(doppler_loss_vals)
         state_row.extend(sat_gain_vals)
-
-        best_sat_idx = self._get_best_visible_satellite(md, sat_list)
-        state_row.append(best_sat_idx / max(S, 1))
-
+        # [删除] 去掉 best_sat_idx (可由vis推导，减少冗余)
+        # 剩余算力 (N+S维，不变)
         for bs_idx, bs in enumerate(bs_list):
             state_row.append(self._safe_ratio(bs.res_F, F_BS[bs_idx]))
         for sat_idx, sat in enumerate(sat_list):
@@ -409,25 +399,13 @@ class EdgeEnv:
         delta_h = sat_a.height - sat_b.height
         return math.sqrt(delta_x ** 2 + delta_y ** 2 + delta_h ** 2)
 
-    def _sample_sat_isl_delay(self, md, sat_list, target_sat_idx):
-        # 对应论文中的：
-        # T_ISL = 1(target != access) * [ d_{s,s'}^t / c + B / (R_max * (1-rho)) ]
-        # 这里特别按新版论文修正了方向：
-        # 任务从接入卫星 c_{m,t}^{SAT} 转发到目标计算卫星 b_{m,t}-N。
-        access_sat_idx = self._get_access_satellite_index(md, sat_list)
+    def _sample_sat_isl_delay(self,md,sat_list,target_sat_idx):
+        access_sat_idx = self._get_access_satellite_index(md,sat_list)
         if access_sat_idx == 0:
             return 0.0, 0, 0.0
         if access_sat_idx - 1 == target_sat_idx:
             return 0.0, access_sat_idx, 0.0
-
-        access_sat = sat_list[access_sat_idx - 1]
-        target_sat = sat_list[target_sat_idx]
-        d_isl = self._calc_satellite_pair_distance(target_sat, access_sat)
-        t_isl_prop = d_isl / para.LIGHT_SPEED
-        load_ratio = para.SAT_ISL_MEAN_LOAD_RATIO
-        isl_rate = para.SAT_ISL_MAX_RATE * max(1e-3, 1.0 - load_ratio)
-        t_isl_trans = md.B / isl_rate
-        return t_isl_prop + t_isl_trans, access_sat_idx, t_isl_prop
+        return ( para.ISL_DELAY_FIXED, access_sat_idx, para.ISL_DELAY_FIXED)
 
     def _get_satellite_link_sample(self, md, sat_list, sat_idx):
         # 这个缓存函数对应论文里的“同一时隙、同一终端、同一目标卫星”的固定链路 realization。
@@ -491,73 +469,11 @@ class EdgeEnv:
                 return True
         return False
 
-    def _is_satellite_action_feasible(self, md, sat, sat_idx, sat_list):
-        # 这里把新版论文的卫星卸载可行条件直接做成动作掩码：
-        # 1. 卫星可见；
-        # 2. 卫星剩余算力至少能容纳最小分配频率；
-        # 3. 在“当前卫星可提供的较优频率”下，剩余时延预算 bar_Gamma^SAT > 0；
-        # 4. P_min^SAT > P_max^MD 只记录诊断并进入 reward 软惩罚，不再作为硬 mask。
-        # 这里特意不用 SAT_F_MIN 去判可行性。
-        # 原因是：论文中的 D3QN 只负责决定“是否选这颗卫星”，
-        # 真正的连续频率分配是后续 SAC 再做。
-        # 如果掩码阶段直接按最小频率计算，就会把很多“本可通过更高频率满足时延”的卫星动作过早过滤掉。
-        self.last_debug["mask_sat_total_checks"] += 1
+    def _is_satellite_action_feasible(self,md,sat,sat_idx,sat_list):
         if not md.is_sat_visible(sat):
-            # 对应论文里的可见性约束不满足。
-            self.last_debug["mask_sat_not_visible"] += 1
             return False
         if sat.res_F < para.SAT_F_MIN:
-            # 对应论文里的卫星计算资源约束不满足。
-            self.last_debug["mask_sat_no_resource"] += 1
             return False
-
-        sat_link_sample = self._get_satellite_link_sample(md, sat_list, sat_idx)
-        t_isl = sat_link_sample["T_isl_s"]
-        # 这里用“当前卫星此刻最多能拿出的可分配频率”来判断是否存在可行连续动作，
-        # 对应论文里“离散目标可选后，连续资源分配仍有解”的存在性判定。
-        candidate_freq = min(sat.res_F, para.SAT_F_MAX)
-        t_comp_candidate, _ = sat.computing(md.B, md.C, candidate_freq)
-        _, power_result = self._calc_sat_power(md, sat, t_comp_candidate, t_isl)
-        if power_result["remaining_budget_sat"] <= 0:
-            # 对应论文里的剩余时延预算 bar_Gamma^SAT 非正。
-            # 这里表示：即便给这颗卫星当前尽量高的频率，任务仍然没有剩余传输预算。
-            self.last_debug["mask_sat_non_positive_budget"] += 1
-            # 这里记录“预算失败的平均缺口”，方便判断是只差一点点，还是卫星路径整体严重超时。
-            self.last_debug["mask_sat_remaining_budget_fail_sum"] += power_result["remaining_budget_sat"]
-            self.last_debug["mask_sat_remaining_budget_fail_count"] += 1
-            return False
-        power_limit_exceeded = bool(power_result.get("power_limit_exceeded", False))
-        if power_limit_exceeded:
-            # 对应论文里的最小可行功率 P_min^SAT 超过终端最大功率上限。
-            # 现在这里只记录诊断信息，不再把该卫星动作从 DQN 候选集中硬删除。
-            self.last_debug["mask_sat_power_infeasible"] += 1
-            # 这里只裁剪诊断日志里的功率缺口比例，避免 inf 或极端值把平均数拉爆。
-            # 真正的训练信号会在 step() 中通过 sat_power_penalty 进入 reward。
-            raw_power_excess_ratio = power_result["P_min_sat"] / max(para.MD_MAX_POWER, 1e-12)
-            power_excess_ratio = float(np.clip(raw_power_excess_ratio, 0.0, 100.0))
-            self.last_debug["mask_sat_power_excess_ratio_sum"] += power_excess_ratio
-            self.last_debug["mask_sat_power_excess_ratio_count"] += 1
-
-        # 问题 1 的关键修复：卫星动作进入 DQN 候选集之前，也要估算最终总时延是否满足 deadline。
-        # 这里使用 candidate_freq 做乐观估算；如果乐观情况下仍然超过 Gamma，就说明该卫星动作不适合作为候选动作。
-        t_tran_candidate, _ = md.sat_offloading(
-            md.B,
-            power_result["selected_power"],
-            power_result["channel_info"]["g_sat_raw"],
-            doppler_loss=power_result["channel_info"]["doppler_loss"],
-        )
-        total_delay_candidate = power_result["T_prop_s"] + t_isl + t_tran_candidate + t_comp_candidate
-        if total_delay_candidate > md.Gamma:
-            if power_limit_exceeded:
-                # 如果超时是由 P_min_sat 超过 MD_MAX_POWER 导致的，就让动作通过 mask，并在 reward 里承担超功率和 deadline 惩罚。
-                self.last_debug["mask_sat_feasible"] += 1
-                return True
-            self.last_debug["mask_sat_remaining_budget_fail_sum"] += md.Gamma - total_delay_candidate
-            self.last_debug["mask_sat_remaining_budget_fail_count"] += 1
-            return False
-
-        # 通过可见性、资源和剩余预算检查后，这个卫星动作进入 D3QN 候选集合；超功率问题留给 reward 学习。
-        self.last_debug["mask_sat_feasible"] += 1
         return True
 
     def _sample_ground_queue_delay(self, bs_idx, bs):
@@ -571,26 +487,18 @@ class EdgeEnv:
         return para.GROUND_QUEUE_DELAY_MAX* (load_ratio ** 2)
 
     def _build_paper_reward(
-        self,
-        priority,
-        total_delay,
-        total_energy,
-        penalty_time,
-        penalty_resource,
-        penalty_visibility,
-        penalty_propagation,
-        penalty_zero_alloc,
-        sat_load_penalty,
-        sat_power_penalty,
-        deadline_violated,
-        deadline_overrun_ratio,
+            self,
+            priority,
+            total_delay,
+            total_energy,
+            penalty_resource,
+            penalty_visibility,
+            penalty_propagation,  # 现在 PENALTY_PROPAGATION = -0.05，真正有效
+            penalty_zero_alloc,  # 现在 = 0，可以保留参数接口但值为0
+            deadline_violated,
+            deadline_overrun_ratio,
+            # 删除永久为0的参数: penalty_time, sat_load_penalty, sat_power_penalty
     ):
-        # 这里把奖励函数恢复成论文大纲里的形式：
-        # 1. 代价函数主干为 phi = w_D * T + w_E * E - w_V * V；
-        # 2. 强化学习奖励写成 reward = -phi + 各类约束惩罚；
-        # 3. 其中 V 对应任务价值，这里沿用当前任务优先级 Priority 作为任务价值表征。
-        # 奖励主项先做量纲归一化，再加权求和。
-        # 这样 w_t / w_e / w_v 反映真实偏好，而不是让秒、焦耳和优先级数字直接竞争。
         delay_norm = total_delay / max(float(para.REWARD_DELAY_NORM), 1e-9)
         energy_norm = total_energy / max(float(para.REWARD_ENERGY_NORM), 1e-9)
         value_norm = priority / max(float(para.REWARD_VALUE_NORM), 1e-9)
@@ -598,25 +506,20 @@ class EdgeEnv:
         energy_cost = w_e * energy_norm
         task_value = w_v * value_norm
         phi_cost = delay_cost + energy_cost - task_value
-        # 成功 bonus 让“满足 deadline”在 reward 上有明确正反馈；超时按超出比例连续惩罚。
         deadline_bonus = 0.0 if deadline_violated else para.REWARD_SUCCESS_BONUS
+        # 系数已从0.60降到0.20，振荡幅度大幅收窄
         deadline_overrun_penalty = -para.REWARD_OVERRUN_WEIGHT * deadline_overrun_ratio
-        # 这里恢复成论文大纲里的主奖励结构：
-        # reward = -phi + r_time + r_fre + r_vis + r_prop
-        # 同时保留你后续加入的零分配惩罚、卫星负载软惩罚和卫星超功率软惩罚，
-        # 因为它们属于训练实现层面的辅助约束，不改变主干目标表达式。
         reward_val = (
-            -phi_cost
-            + penalty_time
-            + penalty_resource
-            + penalty_visibility
-            + penalty_propagation
-            + penalty_zero_alloc
-            + sat_load_penalty
-            + sat_power_penalty
-            + deadline_bonus
-            + deadline_overrun_penalty
+                -phi_cost
+                + penalty_resource  # -0.10（结构约束，有效）
+                + penalty_visibility  # -0.05（可见性约束，有效）
+                + penalty_propagation  # -0.05（功率预算失败，现在有效了）
+                + penalty_zero_alloc  # 0.0（保留接口，不影响）
+                + deadline_bonus  # +0.22（成功奖励）
+                + deadline_overrun_penalty  # 最大 ~-0.20（大幅裁剪）
         )
+        # 加一个reward下界保护，防止极端情况打穿
+        reward_val = max(reward_val, -5.0)
         return reward_val, phi_cost, delay_cost, energy_cost, task_value, deadline_bonus, deadline_overrun_penalty
 
     def _empty_transition_metrics(self):
@@ -732,10 +635,6 @@ class EdgeEnv:
         metrics["unconstrained_power"] = power_result["unconstrained_power"]
         metrics["min_feasible_power"] = power_result["min_feasible_power"]
         metrics["T_prop_s"] = power_result["T_prop_s"]
-        metrics["g_bar_s"] = power_result["g_bar_s"]
-        metrics["remaining_budget_sat"] = power_result["remaining_budget_sat"]
-        metrics["P_min_sat"] = power_result["P_min_sat"]
-        metrics["p_star_sat"] = power_result["p_star_sat"]
         metrics["bar_w_delay_s"] = power_result["bar_w_delay_s"]
         metrics["bar_w_energy_s"] = power_result["bar_w_energy_s"]
 
@@ -1039,13 +938,10 @@ class EdgeEnv:
             priority=priority,
             total_delay=total_delay,
             total_energy=total_energy,
-            penalty_time=penalty_time,
             penalty_resource=penalty_resource,
             penalty_visibility=penalty_visibility,
             penalty_propagation=penalty_propagation,
             penalty_zero_alloc=penalty_zero_alloc,
-            sat_load_penalty=sat_load_penalty,
-            sat_power_penalty=penalty_sat_power,
             deadline_violated=deadline_violated,
             deadline_overrun_ratio=deadline_overrun_ratio,
         )

@@ -213,7 +213,7 @@ def build_hd3qn_agent(env):
         obs_dim=obs_shape,
         act_dim=action_dim,
         e_greed=0.9,
-        e_greed_decrement=0.89 / max(100 * steps * M, 1),#调探索率衰减
+        e_greed_decrement=0.89 / max(400* steps * M, 1),#调探索率衰减
     )
     return agent
 
