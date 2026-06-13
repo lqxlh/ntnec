@@ -424,8 +424,7 @@ class EdgeEnv:
         target_sat = sat_list[target_sat_idx]
         d_isl = self._calc_satellite_pair_distance(target_sat, access_sat)
         t_isl_prop = d_isl / para.LIGHT_SPEED
-        pareto_value = np.random.pareto(para.SAT_ISL_PARETO_SHAPE) + 1.0
-        load_ratio = min(pareto_value * 0.01, para.SAT_ISL_LOAD_CLIP)
+        load_ratio = para.SAT_ISL_MEAN_LOAD_RATIO
         isl_rate = para.SAT_ISL_MAX_RATE * max(1e-3, 1.0 - load_ratio)
         t_isl_trans = md.B / isl_rate
         return t_isl_prop + t_isl_trans, access_sat_idx, t_isl_prop

@@ -266,11 +266,8 @@ SAT_LOCAL_OFFSETS = [
 ]
 
 # 星间链路参数：
-
+SAT_ISL_MEAN_LOAD_RATIO = 0.02   # Pareto(1.5) 均值 ×0.01
 SAT_ISL_MAX_RATE = 1e9
-SAT_ISL_PARETO_SHAPE = 1.5
-SAT_ISL_LOAD_CLIP = 0.9
-
 # 传播与链路的归一化辅助上界：
 # 这些量只用于把距离、传播时延等输入状态归一化到 [0,1]。
 MAX_SAT_HORIZONTAL_DISTANCE = math.sqrt(
