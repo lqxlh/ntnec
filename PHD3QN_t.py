@@ -297,6 +297,7 @@ def run_episode(env, rpm, agent, md_list, bs_list, sat_list):
 
         total_reward += slot_reward
         step_idx += 1
+        agent.alg.soft_update()  # ← 每时隙软更新一次
         env.reset_state(md_list, bs_list, sat_list)
 
     debug_info = dict(env.last_debug)

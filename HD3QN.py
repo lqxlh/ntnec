@@ -410,8 +410,6 @@ class Agent:
             next_action_mask=next_mask_t,
             is_weights=is_weights,
         )
-        #软更新
-        self.alg.soft_update()
 
         return total_loss.item(), q_loss.item(), cont_loss.item(), td_errors
 
