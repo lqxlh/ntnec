@@ -984,7 +984,7 @@ class EdgeEnv:
             # 两星分片会同时占用两颗卫星的时隙算力，因此负载软惩罚也要分别计算。
             sat_load_penalty_a, _, usage_a_after = self._calc_sat_load_penalty(sat_a_idx, freq_a)
             sat_load_penalty_b, _, usage_b_after = self._calc_sat_load_penalty(sat_b_idx, freq_b)
-            sat_load_penalty = sat_load_penalty_a + sat_load_penalty_b
+            sat_load_penalty =min(sat_load_penalty_a, sat_load_penalty_b)
             if penalty_visibility == 0 and penalty_resource == 0 and freq_a > 0 and freq_b > 0:
                 self._slot_sat_usage[sat_a_idx] += freq_a
                 self._slot_sat_usage[sat_b_idx] += freq_b
@@ -1027,7 +1027,7 @@ class EdgeEnv:
                 if self._is_split_action(b):
                     self.last_debug["split_deadline_success_actions"] += 1
 
-        if b > N and penalty_visibility == 0 and penalty_resource == 0:
+        if b > N and penalty_visibility == 0 and penalty_resource == 0 and penalty_sat_power == 0:
             # 这里表示卫星动作在可见性、传播可行性、算力资源等层面是“可执行”的。
             # 它不保证一定满足 Gamma，只表示该离散动作不是一个物理不可行的坏动作。
             self.last_debug["sat_exec_success_actions"] += 1
@@ -1125,8 +1125,6 @@ class EdgeEnv:
         self.last_debug["penalty_sat_power_sum"] += penalty_sat_power
         self.last_debug["deadline_bonus_sum"] += deadline_bonus
         self.last_debug["deadline_overrun_penalty_sum"] += deadline_overrun_penalty
-        # 在 reward 计算完成的最后
-        reward = max(reward, -8.0)  # 单步 reward 下限截断到 -5
         self.last_debug["reward_sum"] += reward
         self.last_debug["steps"] += 1
 

@@ -34,8 +34,8 @@ RUN_PROFILES = {
         "steps": 200,
         "max_episode": 100,
         "seed": [1],
-        "batch_size": 512,
-        "sac_batch_size": 512,
+        "batch_size": 256,
+        "sac_batch_size": 256,
         "eval_interval": 1,
         "eval_rounds": 2,
     },
@@ -59,7 +59,7 @@ SAC_BATCH_SIZE = ACTIVE_PROFILE["sac_batch_size"]
 #离散的学习率
 LEARNING_RATE = 1e-4
 #连续的学习率
-CONT_LEARNING_RATE = 3e-4
+CONT_LEARNING_RATE = 1e-4
 ACTOR_LR = 3e-4
 CRITIC_LR = 3e-4
 DQN_GAMMA = 0.99
@@ -114,7 +114,7 @@ SPLIT_OVERHEAD_PENALTY = -0.01
 # 分片动作掩码用几个代表性比例做“存在可行解”判断，避免要求两颗卫星都能独立跑完整任务。
 SPLIT_FEASIBILITY_RATIOS = (0.25, 0.50, 0.75)
 # 分片比例探索只作用于连续动作第 0 维，防止比例长期卡在 SPLIT_MIN_RATIO 边界。
-SPLIT_RATIO_NOISE_FLOOR = 0.02
+SPLIT_RATIO_NOISE_FLOOR = 0.01
 SPLIT_RATIO_EXPLORE_PROB = 0.10
 # 轻量边界惩罚让分片比例远离 0/1 原始输出边界，但权重要小，避免强行固定到 0.5。
 SPLIT_RATIO_BOUNDARY_WEIGHT = 0.002
@@ -172,7 +172,7 @@ GROUND_GAIN_BETA = 1e-4
 GROUND_PATHLOSS = 3.0
 MD_MAX_POWER = 0.1
 # 卫星链路所需最小功率超过终端最大发射功率时，不再做硬 mask，而是在 reward 中按超出比例做软惩罚。
-SAT_POWER_EXCESS_PENALTY_WEIGHT = 0.35
+SAT_POWER_EXCESS_PENALTY_WEIGHT = 0.15
 # 超功率比例可能因为极差链路变得很大，这里截断后再平方，避免单步 reward 被异常值完全打爆。
 SAT_POWER_EXCESS_RATIO_CLIP = 10.0
 
@@ -266,7 +266,7 @@ SAT_LOCAL_OFFSETS = [
 ]
 
 # 星间链路参数：
-# 这里对应论文中的 T_{m,t}^{ISL} = B_{m,t} / R_{s,s'}^{ISL}。
+
 SAT_ISL_MAX_RATE = 1e9
 SAT_ISL_PARETO_SHAPE = 1.5
 SAT_ISL_LOAD_CLIP = 0.9
@@ -282,11 +282,11 @@ MAX_PROP_DELAY = MAX_SAT_DISTANCE / LIGHT_SPEED
 
 # 约束惩罚：
 # 这里对应论文奖励函数中的 r_time、r_fre、r_vis、r_prop。
-PENALTY_TIME = -0.5
-PENALTY_RESOURCE = -0.35
-PENALTY_VISIBILITY = -0.25
-PENALTY_PROPAGATION = -0.25
-PENALTY_ZERO_ALLOCATION = -0.15
+PENALTY_TIME = 0
+PENALTY_RESOURCE = -0.10
+PENALTY_VISIBILITY = -0.05
+PENALTY_PROPAGATION = 0
+PENALTY_ZERO_ALLOCATION = -0.05
 
 # 卫星软约束参数：
 # 这里不是替换论文中的可见性、资源、时延预算、功率可行性等硬约束，
